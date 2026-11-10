@@ -370,7 +370,7 @@ public func runOpenComputerUseCall(
     let dispatcher = ComputerUseToolDispatcher(service: service)
 
     switch invocation {
-    case let .single(toolName, argumentsJSON, argumentsFile, noScreenshot):
+    case let .single(toolName, argumentsJSON, argumentsFile, noScreenshot, screenshotOut):
         let arguments = try readOpenComputerUseToolArguments(
             json: argumentsJSON,
             file: argumentsFile
@@ -379,24 +379,39 @@ public func runOpenComputerUseCall(
             name: toolName,
             arguments: applyingNoScreenshot(noScreenshot, tool: toolName, arguments: arguments)
         )
+        if let screenshotOut {
+            guard result.hasScreenshotContent else {
+                throw ComputerUseError.message("No screenshot content to write to \(screenshotOut).")
+            }
+            try result.writeScreenshots(to: screenshotOut)
+        }
+        let jsonObject = screenshotOut.map {
+            result.dictionaryReplacingScreenshots(with: "Screenshot written to \($0)")
+        } ?? result.asDictionary
         return OpenComputerUseCallOutput(
-            jsonObject: result.asDictionary,
+            jsonObject: jsonObject,
             hasToolError: result.isError
         )
 
-    case let .sequence(callsJSON, callsFile, interCallDelay, noScreenshot):
+    case let .sequence(callsJSON, callsFile, interCallDelay, noScreenshot, screenshotOut):
         let calls = try readOpenComputerUseCallSequence(json: callsJSON, file: callsFile)
         var outputs: [[String: Any]] = []
         var hasToolError = false
+        var screenshotIndex = 0
 
         for (index, call) in calls.enumerated() {
             let result = dispatcher.callToolAsResult(
                 name: call.tool,
                 arguments: applyingNoScreenshot(noScreenshot, tool: call.tool, arguments: call.arguments)
             )
+            var resultObject = result.asDictionary
+            if let screenshotOut, result.hasScreenshotContent {
+                screenshotIndex += try result.writeScreenshots(to: screenshotOut, startingAt: screenshotIndex)
+                resultObject = result.dictionaryReplacingScreenshots(with: "Screenshot written to \(screenshotOut)")
+            }
             outputs.append([
                 "tool": call.tool,
-                "result": result.asDictionary,
+                "result": resultObject,
             ])
 
             if result.isError {
@@ -409,6 +424,9 @@ public func runOpenComputerUseCall(
             }
         }
 
+        if let screenshotOut, screenshotIndex == 0 {
+            throw ComputerUseError.message("No screenshot content to write to \(screenshotOut).")
+        }
         return OpenComputerUseCallOutput(jsonObject: outputs, hasToolError: hasToolError)
     }
 }

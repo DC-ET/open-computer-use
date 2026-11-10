@@ -61,6 +61,7 @@ open-computer-use doctor
 open-computer-use call list_apps
 ocu call list_apps
 open-computer-use call get_app_state --args '{"app":"TextEdit"}' --no-screenshot
+open-computer-use call get_app_state --args '{"app":"TextEdit"}' --screenshot-out /tmp/ocu-state.png
 open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":1000}' --no-screenshot
 open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":"max"}' --no-screenshot
 open-computer-use call get_app_state --args '{"app":"Google Chrome","max_tree_nodes":3000,"max_tree_depth":96}' --no-screenshot
@@ -91,7 +92,8 @@ server, use the CLI directly:
 - Separate `ocu call` processes do not share `element_index`. Re-observe in a new
   process, or keep the whole sequence inside `--calls` / `ocu js`.
 - Screenshots are base64 by default. Keep them out of the model context unless
-  needed; write them to a file and inspect it. See
+  needed. Use `--screenshot-out <path>` to write the image and replace the image
+  block with a text note, or decode it manually. See
   [references/output-recipes.md](references/output-recipes.md).
 
 Example:

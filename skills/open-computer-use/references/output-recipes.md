@@ -50,10 +50,23 @@ nodeRepl.write(apps);
 '
 ```
 
-## Decode a screenshot when you need to look
+## Write a screenshot directly
 
-Keep the image out of the model context until you actually need it. Capture it,
-write it to a temporary file, then inspect the file:
+Use `--screenshot-out` when the image should be inspected as a file rather than
+embedded in JSON:
+
+```sh
+ocu call get_app_state --args '{"app":"ZCode"}' --screenshot-out /tmp/zcode-state.png
+ocu snapshot --screenshot-out /tmp/zcode-state.png ZCode
+```
+
+The output keeps the AX text and replaces the base64 image block with
+`Screenshot written to <path>`. Additional images get `-1`, `-2`, ... before the
+extension. `--screenshot-out` cannot be combined with `--no-screenshot`.
+
+## Decode a screenshot manually
+
+If the image is already in JSON and you need a file, decode it:
 
 ```sh
 ocu call get_app_state --args '{"app":"ZCode"}' \

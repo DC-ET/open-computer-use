@@ -29,6 +29,9 @@ JavaScript API 指引，不适合 Agent 消费。要求逐项优化、本地验�
   `include_screenshot` 优先。
 - `open-computer-use snapshot` 新增 `--no-screenshot`，等价于
   `--include-screenshot false`。
+- `call` / `snapshot` 新增 `--screenshot-out <path>`：把返回的图片写入文件，
+  stdout 保留 AX 文本，并把 image block 替换为 `Screenshot written to ...`。
+  多图自动使用 `-1` / `-2` 后缀；不能与 `--no-screenshot` 同时使用。
 - `ocu js` / `ocu repl` 新增 `--quiet`，过滤一次性的
   “Open Computer Use JavaScript API” 指引；`--json` 仍输出单个 JSON 结果。
 - 补充 CLI help 文本与 Node CLI 测试。
@@ -62,6 +65,9 @@ JavaScript API 指引，不适合 Agent 消费。要求逐项优化、本地验�
 - `packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift`
 - `packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift`
 - `packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift`
+- `packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolResult.swift`
+- `apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift`
+- `apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift`
 - `packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift`
 - `scripts/node-repl/open-computer-use-cli.mjs`
 - `scripts/node-repl/open-computer-use-cli.test.mjs`
@@ -80,6 +86,9 @@ JavaScript API 指引，不适合 Agent 消费。要求逐项优化、本地验�
 - 在 ZCode（Electron）中，用独立 Dev app 运行新构建：
   `type_text` 成功写入中文“测试”，AX 状态显示 `Value: 测试`；
   清空后输入框恢复 placeholder。
+- `call get_app_state --screenshot-out` 与 `snapshot --screenshot-out` 均生成
+  合法 PNG（1280×700），stdout 中 image block 数量为 0，并出现
+  `Screenshot written to ...`。
 - 对 Finder 执行 `type_text` 返回明确错误
   `type_text requires a focused editable text element...`，不再静默成功。
 

@@ -64,12 +64,12 @@ final class OpenComputerUseKitTests: XCTestCase {
     func testCLIRecognizesSingleToolCallCommand() throws {
         XCTAssertEqual(
             try parseOpenComputerUseCLI(arguments: ["call", "list_apps"]),
-            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil, noScreenshot: false))
+            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil, noScreenshot: false, screenshotOut: nil))
         )
 
         XCTAssertEqual(
             try parseOpenComputerUseCLI(arguments: ["call", "get_app_state", "--args", #"{"app":"TextEdit"}"#]),
-            .call(.single(toolName: "get_app_state", argumentsJSON: #"{"app":"TextEdit"}"#, argumentsFile: nil, noScreenshot: false))
+            .call(.single(toolName: "get_app_state", argumentsJSON: #"{"app":"TextEdit"}"#, argumentsFile: nil, noScreenshot: false, screenshotOut: nil))
         )
     }
 
@@ -82,7 +82,8 @@ final class OpenComputerUseKitTests: XCTestCase {
                 callsJSON: calls,
                 callsFile: nil,
                 interCallDelay: openComputerUseDefaultInterCallDelay,
-                noScreenshot: false
+                noScreenshot: false,
+                screenshotOut: nil
             ))
         )
     }
@@ -92,14 +93,14 @@ final class OpenComputerUseKitTests: XCTestCase {
 
         XCTAssertEqual(
             try parseOpenComputerUseCLI(arguments: ["call", "--calls", calls, "--sleep", "0.5"]),
-            .call(.sequence(callsJSON: calls, callsFile: nil, interCallDelay: 0.5, noScreenshot: false))
+            .call(.sequence(callsJSON: calls, callsFile: nil, interCallDelay: 0.5, noScreenshot: false, screenshotOut: nil))
         )
     }
 
     func testCLIRecognizesNoScreenshotForSingleAndSequenceCalls() throws {
         XCTAssertEqual(
             try parseOpenComputerUseCLI(arguments: ["call", "get_app_state", "--no-screenshot"]),
-            .call(.single(toolName: "get_app_state", argumentsJSON: nil, argumentsFile: nil, noScreenshot: true))
+            .call(.single(toolName: "get_app_state", argumentsJSON: nil, argumentsFile: nil, noScreenshot: true, screenshotOut: nil))
         )
 
         let calls = #"[{"tool":"get_app_state","args":{"app":"TextEdit"}}]"#
@@ -109,9 +110,62 @@ final class OpenComputerUseKitTests: XCTestCase {
                 callsJSON: calls,
                 callsFile: nil,
                 interCallDelay: openComputerUseDefaultInterCallDelay,
-                noScreenshot: true
+                noScreenshot: true,
+                screenshotOut: nil
             ))
         )
+    }
+
+    func testCLIRecognizesScreenshotOutForCallAndSnapshot() throws {
+        XCTAssertEqual(
+            try parseOpenComputerUseCLI(arguments: ["call", "get_app_state", "--screenshot-out", "/tmp/state.png"]),
+            .call(.single(toolName: "get_app_state", argumentsJSON: nil, argumentsFile: nil, noScreenshot: false, screenshotOut: "/tmp/state.png"))
+        )
+        XCTAssertEqual(
+            try parseOpenComputerUseCLI(arguments: ["snapshot", "TextEdit", "--screenshot-out", "/tmp/state.png"]),
+            .snapshot(app: "TextEdit", screenshotOut: "/tmp/state.png")
+        )
+    }
+
+    func testScreenshotOutRejectsNoScreenshotCombination() {
+        XCTAssertThrowsError(
+            try parseOpenComputerUseCLI(arguments: ["call", "get_app_state", "--no-screenshot", "--screenshot-out", "/tmp/state.png"])
+        )
+        XCTAssertThrowsError(
+            try parseOpenComputerUseCLI(arguments: ["snapshot", "TextEdit", "--no-screenshot", "--screenshot-out", "/tmp/state.png"])
+        )
+    }
+
+    func testWriteScreenshotsWritesAndReplacesImageBlocks() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ocu-screenshot-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let payload = Data([0x89, 0x50, 0x4e, 0x47])
+        let result = ToolCallResult(content: [.text("state"), .pngImage(payload)])
+
+        XCTAssertTrue(result.hasScreenshotContent)
+        XCTAssertEqual(try result.writeScreenshots(to: url.path), 1)
+        XCTAssertEqual(try Data(contentsOf: url), payload)
+
+        let dictionary = result.dictionaryReplacingScreenshots(with: "written")
+        let content = try XCTUnwrap(dictionary["content"] as? [[String: Any]])
+        XCTAssertFalse(content.contains { $0["type"] as? String == "image" })
+        XCTAssertTrue(content.contains { $0["text"] as? String == "written" })
+    }
+
+    func testWriteScreenshotsSuffixesAdditionalImages() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ocu-screenshot-\(UUID().uuidString).png")
+        let base = url.deletingPathExtension().lastPathComponent
+        let second = url.deletingLastPathComponent().appendingPathComponent("\(base)-1.png")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let payload = Data([0x01, 0x02, 0x03])
+        let result = ToolCallResult(content: [.pngImage(payload), .pngImage(payload)])
+
+        XCTAssertEqual(try result.writeScreenshots(to: url.path), 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
     }
 
     func testNoScreenshotOnlyAugmentsGetAppStateWithoutExplicitChoice() {
@@ -405,7 +459,8 @@ final class OpenComputerUseKitTests: XCTestCase {
                 callsJSON: #"[{"tool":"not_a_tool"},{"tool":"list_apps"}]"#,
                 callsFile: nil,
                 interCallDelay: openComputerUseDefaultInterCallDelay,
-                noScreenshot: false
+                noScreenshot: false,
+                screenshotOut: nil
             )
         )
 
@@ -422,7 +477,8 @@ final class OpenComputerUseKitTests: XCTestCase {
                 callsJSON: #"[{"tool":"list_apps"},{"tool":"list_apps"},{"tool":"list_apps"}]"#,
                 callsFile: nil,
                 interCallDelay: openComputerUseDefaultInterCallDelay,
-                noScreenshot: false
+                noScreenshot: false,
+                screenshotOut: nil
             ),
             sleepHandler: { recordedSleeps.append($0) }
         )
@@ -439,7 +495,7 @@ final class OpenComputerUseKitTests: XCTestCase {
             .doctor(),
             .listApps,
             .snapshot(app: "TextEdit"),
-            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil, noScreenshot: false)),
+            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil, noScreenshot: false, screenshotOut: nil)),
         ] {
             XCTAssertTrue(shouldUseMacOSAppAgentProxy(
                 command: command,
@@ -481,7 +537,7 @@ final class OpenComputerUseKitTests: XCTestCase {
             currentDirectory: directory.path
         )
         XCTAssertEqual(arguments, ["call", "--calls-file", directory.appendingPathComponent("calls.json").path, "--sleep", "0"])
-        guard case let .call(.sequence(_, callsFile, _, _)) = try parseOpenComputerUseCLI(arguments: arguments) else {
+        guard case let .call(.sequence(_, callsFile, _, _, _)) = try parseOpenComputerUseCLI(arguments: arguments) else {
             return XCTFail("expected a call sequence")
         }
         XCTAssertEqual(try readOpenComputerUseCallSequence(json: nil, file: callsFile).map(\.tool), ["list_apps"])

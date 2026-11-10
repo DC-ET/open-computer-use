@@ -7,7 +7,7 @@ public enum OpenComputerUseCLICommand: Equatable {
     case lockedUseStatus(json: Bool)
     case lockedUseManagement(action: String, validation: Bool)
     case listApps
-    case snapshot(app: String, textLimit: SnapshotTextLimit = .defaults, treeLimits: AccessibilityTreeLimits = .defaults, observation: SnapshotObservationOptions = .defaults)
+    case snapshot(app: String, textLimit: SnapshotTextLimit = .defaults, treeLimits: AccessibilityTreeLimits = .defaults, observation: SnapshotObservationOptions = .defaults, screenshotOut: String? = nil)
     case call(OpenComputerUseCallInvocation)
     case turnEnded(payload: String?)
     case help(command: String?)
@@ -15,8 +15,8 @@ public enum OpenComputerUseCLICommand: Equatable {
 }
 
 public enum OpenComputerUseCallInvocation: Equatable {
-    case single(toolName: String, argumentsJSON: String?, argumentsFile: String?, noScreenshot: Bool)
-    case sequence(callsJSON: String?, callsFile: String?, interCallDelay: TimeInterval, noScreenshot: Bool)
+    case single(toolName: String, argumentsJSON: String?, argumentsFile: String?, noScreenshot: Bool, screenshotOut: String?)
+    case sequence(callsJSON: String?, callsFile: String?, interCallDelay: TimeInterval, noScreenshot: Bool, screenshotOut: String?)
 }
 
 public let openComputerUseDefaultInterCallDelay: TimeInterval = 1
@@ -204,7 +204,7 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
     case "snapshot":
         return """
         Usage:
-          open-computer-use snapshot [--include-ax true|false] [--include-screenshot true|false] [--no-screenshot] [--text-limit <positive-int|max>] [--max-tree-nodes <positive-int>] [--max-tree-depth <positive-int>] <app>
+          open-computer-use snapshot [--include-ax true|false] [--include-screenshot true|false] [--no-screenshot] [--screenshot-out <path>] [--text-limit <positive-int|max>] [--max-tree-nodes <positive-int>] [--max-tree-depth <positive-int>] <app>
 
         Arguments:
           <app>                App name or bundle identifier to inspect.
@@ -213,6 +213,7 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
           --include-ax         Include AX/focus/selection (true by default). False invalidates prior indexes.
           --include-screenshot Include screenshot capture (true by default). At least one channel must be true.
           --no-screenshot      Shorthand for --include-screenshot false; AX state only.
+          --screenshot-out     Write the captured screenshot to a file, keeping stdout text-only.
           --text-limit         Override the default 500 character text limit. Use `max` for full text.
           --max-tree-nodes     Override the default 1200 node accessibility tree budget.
           --max-tree-depth     Override the default 64 level accessibility tree depth.
@@ -222,14 +223,15 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
     case "call":
         return """
         Usage:
-          open-computer-use call <tool> [--args '<json-object>'] [--no-screenshot]
-          open-computer-use call <tool> [--args-file <path>] [--no-screenshot]
-          open-computer-use call --calls '<json-array>' [--sleep <seconds>] [--no-screenshot]
-          open-computer-use call --calls-file <path> [--sleep <seconds>] [--no-screenshot]
+          open-computer-use call <tool> [--args '<json-object>'] [--no-screenshot] [--screenshot-out <path>]
+          open-computer-use call <tool> [--args-file <path>] [--no-screenshot] [--screenshot-out <path>]
+          open-computer-use call --calls '<json-array>' [--sleep <seconds>] [--no-screenshot] [--screenshot-out <path>]
+          open-computer-use call --calls-file <path> [--sleep <seconds>] [--no-screenshot] [--screenshot-out <path>]
 
         Examples:
           open-computer-use call list_apps
           open-computer-use call get_app_state --args '{"app":"TextEdit"}' --no-screenshot
+          open-computer-use call get_app_state --args '{"app":"TextEdit"}' --screenshot-out /tmp/state.png
           open-computer-use call --calls '[{"tool":"get_app_state","args":{"app":"TextEdit"}},{"tool":"press_key","args":{"app":"TextEdit","key":"Return"}}]' --no-screenshot
           open-computer-use call --calls-file examples/textedit-overlay-seq.json --sleep 0.5
 
@@ -239,6 +241,8 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
         Sequence runs sleep \(formatOpenComputerUseDelay(openComputerUseDefaultInterCallDelay)) between successful operations by default.
         --no-screenshot adds include_screenshot=false to get_app_state calls unless
         the call already sets include_screenshot explicitly.
+        --screenshot-out writes returned images to a file and replaces the image
+        block with a text note. It cannot be combined with --no-screenshot.
         """
     case "turn-ended":
         return """
@@ -340,6 +344,7 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
     var textLimit = SnapshotTextLimit.defaults
     var maxTreeNodes: Int?
     var maxTreeDepth: Int?
+    var screenshotOut: String?
 
     var index = 0
     while index < arguments.count {
@@ -372,6 +377,8 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
                 throw OpenComputerUseCLIError(message: "--max-tree-depth requires a positive integer value", helpCommand: "snapshot")
             }
             maxTreeDepth = try parsePositiveIntegerOption(arguments[index], option: "--max-tree-depth")
+        case "--screenshot-out":
+            screenshotOut = try parseOptionValue("--screenshot-out", arguments: arguments, index: &index)
         case "-h", "--help":
             throw OpenComputerUseCLIError(message: "snapshot help must be requested as `open-computer-use snapshot --help`", helpCommand: "snapshot")
         default:
@@ -395,6 +402,12 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
     guard observation.includeAX || observation.includeScreenshot else {
         throw OpenComputerUseCLIError(message: "At least one of include_ax or include_screenshot must be true", helpCommand: "snapshot")
     }
+    if screenshotOut != nil && !observation.includeScreenshot {
+        throw OpenComputerUseCLIError(
+            message: "--screenshot-out requires screenshot capture; remove --no-screenshot or --include-screenshot false",
+            helpCommand: "snapshot"
+        )
+    }
     return .snapshot(
         app: app,
         textLimit: textLimit,
@@ -402,7 +415,8 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
             maxNodeCount: maxTreeNodes,
             maxDepth: maxTreeDepth
         ),
-        observation: observation
+        observation: observation,
+        screenshotOut: screenshotOut
     )
 }
 
@@ -436,6 +450,7 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
     var callsFile: String?
     var interCallDelay = openComputerUseDefaultInterCallDelay
     var noScreenshot = false
+    var screenshotOut: String?
 
     var index = 0
     while index < arguments.count {
@@ -454,6 +469,8 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
             interCallDelay = try parseTimeIntervalOptionValue("--sleep", arguments: arguments, index: &index)
         case "--no-screenshot":
             noScreenshot = true
+        case "--screenshot-out":
+            screenshotOut = try parseOptionValue("--screenshot-out", arguments: arguments, index: &index)
         case "-h", "--help":
             throw OpenComputerUseCLIError(message: "call help must be requested as `open-computer-use call --help`", helpCommand: "call")
         default:
@@ -469,6 +486,13 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
         }
 
         index += 1
+    }
+
+    if noScreenshot && screenshotOut != nil {
+        throw OpenComputerUseCLIError(
+            message: "Use either --no-screenshot or --screenshot-out, not both",
+            helpCommand: "call"
+        )
     }
 
     let hasSequenceInput = callsJSON != nil || callsFile != nil
@@ -488,7 +512,8 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
             callsJSON: callsJSON,
             callsFile: callsFile,
             interCallDelay: interCallDelay,
-            noScreenshot: noScreenshot
+            noScreenshot: noScreenshot,
+            screenshotOut: screenshotOut
         ))
     }
 
@@ -507,7 +532,7 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
         throw OpenComputerUseCLIError(message: "call requires a tool name or --calls/--calls-file", helpCommand: "call")
     }
 
-    return .call(.single(toolName: toolName, argumentsJSON: argumentsJSON, argumentsFile: argumentsFile, noScreenshot: noScreenshot))
+    return .call(.single(toolName: toolName, argumentsJSON: argumentsJSON, argumentsFile: argumentsFile, noScreenshot: noScreenshot, screenshotOut: screenshotOut))
 }
 
 private func parseOptionValue(

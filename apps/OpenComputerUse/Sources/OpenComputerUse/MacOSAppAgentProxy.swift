@@ -535,10 +535,13 @@ private final class AppAgentConnection: @unchecked Sendable {
                 let service = ComputerUseService()
                 return CLIProxyResponse(stdout: (service.listApps().primaryText ?? "") + "\n", stderr: "", exitCode: EXIT_SUCCESS)
 
-            case let .snapshot(app, textLimit, treeLimits, observation):
+            case let .snapshot(app, textLimit, treeLimits, observation, screenshotOut):
                 let service = ComputerUseService()
-                let text = try service.getAppState(app: app, textLimit: textLimit, treeLimits: treeLimits, observation: observation).textContent
-                return CLIProxyResponse(stdout: text + "\n", stderr: "", exitCode: EXIT_SUCCESS)
+                let result = try service.getAppState(app: app, textLimit: textLimit, treeLimits: treeLimits, observation: observation)
+                if let screenshotOut {
+                    try result.writeScreenshots(to: screenshotOut)
+                }
+                return CLIProxyResponse(stdout: result.textContent + "\n", stderr: "", exitCode: EXIT_SUCCESS)
 
             case let .call(invocation):
                 let output = try runOpenComputerUseCall(invocation)
