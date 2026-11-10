@@ -30,11 +30,11 @@ controls by text and/or role without rendering a tree or taking a screenshot.
 2. Check the CLI is installed with `open-computer-use -h` or `ocu -h`. If installation or setup is missing, read [references/installation.md](references/installation.md).
 3. On supported macOS versions, run `open-computer-use doctor` before the first real GUI task. If permissions are missing, ask the user to approve Accessibility and Screen Recording in the onboarding UI.
 4. Inspect available apps before acting: `open-computer-use call list_apps`.
-5. Capture current UI state with `open-computer-use call get_app_state --args '{"app":"TextEdit"}'`. The default state is usually enough for UI operation.
+5. Capture current UI state with `open-computer-use call get_app_state --args '{"app":"TextEdit"}' --no-screenshot`. Add `include_screenshot: true` only when you actually need to inspect pixels.
 6. When the task needs longer semantic text, such as chat history, email bodies, document text, or long form content, call `get_app_state` with `text_limit: 1000` or `text_limit: "max"`.
 7. When visible long pages or lists appear incomplete even after scrolling, call `get_app_state` with a larger `max_tree_nodes` or `max_tree_depth`.
 8. Prefer element-targeted actions using `element_index` from the latest `get_app_state` result.
-9. For multi-step CLI work, use `open-computer-use call --calls '<json-array>'` so one process can reuse the latest element index mapping.
+9. For multi-step CLI work, use `open-computer-use call --calls '<json-array>'` when the sequence is known, or `ocu js --quiet` when each next action depends on fresh state. Both keep one native session so element indexes stay valid.
 10. For agent runtimes that support local MCP servers, configure `open-computer-use mcp` or `ocu mcp` and call the exposed Computer Use tools directly. Read [references/usage.md](references/usage.md).
 11. For direct code-first orchestration, run `ocu capabilities` and then use one-shot `ocu js` or persistent `ocu repl`. Read [references/usage.md](references/usage.md).
 12. If communication, permission, or desktop-session access fails, read [references/troubleshooting.md](references/troubleshooting.md).
@@ -55,15 +55,16 @@ controls by text and/or role without rendering a tree or taking a screenshot.
 open-computer-use -h
 ocu -h
 ocu capabilities --json
-ocu js 'nodeRepl.write(6 * 7)'
+ocu js --quiet 'nodeRepl.write(6 * 7)'
 ocu repl
 open-computer-use doctor
 open-computer-use call list_apps
 ocu call list_apps
-open-computer-use call get_app_state --args '{"app":"TextEdit"}'
-open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":1000}'
-open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":"max"}'
-open-computer-use call get_app_state --args '{"app":"Google Chrome","max_tree_nodes":3000,"max_tree_depth":96}'
+open-computer-use call get_app_state --args '{"app":"TextEdit"}' --no-screenshot
+open-computer-use call get_app_state --args '{"app":"TextEdit"}' --screenshot-out /tmp/ocu-state.png
+open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":1000}' --no-screenshot
+open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":"max"}' --no-screenshot
+open-computer-use call get_app_state --args '{"app":"Google Chrome","max_tree_nodes":3000,"max_tree_depth":96}' --no-screenshot
 open-computer-use call click --args '{"app":"TextEdit","element_index":"0"}'
 open-computer-use call type_text --args '{"app":"TextEdit","text":"Hello from Open Computer Use"}'
 ```
@@ -74,8 +75,56 @@ For a short sequence that reuses state in one process:
 open-computer-use call --calls '[
   {"tool":"get_app_state","args":{"app":"TextEdit"}},
   {"tool":"press_key","args":{"app":"TextEdit","key":"Return"}}
-]'
+]' --no-screenshot
 ```
+
+## CLI-First Workflow (no MCP host)
+
+When the agent runtime can run shell commands but cannot launch a local MCP
+server, use the CLI directly:
+
+- Observe with `ocu call get_app_state --args '{"app":"..."}' --no-screenshot`.
+- For a known action sequence, use `ocu call --calls '<json-array>' --no-screenshot`.
+- For branching work where the next action depends on fresh state, use
+  `ocu js --quiet` and write explicit output with
+  `nodeRepl.write(JSON.stringify(value))`. `--quiet` omits the one-time API
+  guidance; `--json` returns a single machine-readable result.
+- Separate `ocu call` processes do not share `element_index`. Re-observe in a new
+  process, or keep the whole sequence inside `--calls` / `ocu js`.
+- Screenshots are base64 by default. Keep them out of the model context unless
+  needed. Use `--screenshot-out <path>` to write the image and replace the image
+  block with a text note, or decode it manually. See
+  [references/output-recipes.md](references/output-recipes.md).
+
+Example:
+
+```sh
+ocu js --quiet '
+var app = await cua.getApp("TextEdit", { initialState: false });
+var areas = await app.query({ role: "AXTextArea", limit: 10 });
+nodeRepl.write(JSON.stringify(areas.matches));
+'
+```
+
+## Input And Verification
+
+- `type_text` verifies an accessibility write on web/Electron controls and falls
+  back to Unicode keyboard events when the app reports success but leaves the
+  value unchanged. If both paths fail, it returns an error instead of a silent
+  success.
+- A click can succeed without moving focus. Check the `focused UI element` line
+  or query the text control before typing.
+- Treat `isError: false` as "the call completed", not "the UI changed". Verify
+  the field value, the focused element, or a screenshot before reporting
+  success.
+- If the clipboard must be used for Unicode input, preserve every pasteboard
+  type and restore it afterwards. Electron can decode plain `pbcopy` text as
+  MacRoman (`你好` becomes `‰Ω†Â•Ω`); AppleScript `set the clipboard to "..."`
+  is safer.
+- For Electron/chromium quirks, app-specific recipes, and app relaunch steps,
+  read [references/input-troubleshooting.md](references/input-troubleshooting.md),
+  [references/app-recipes.md](references/app-recipes.md), and
+  [references/app-lifecycle.md](references/app-lifecycle.md).
 
 ## MCP Usage
 
@@ -94,3 +143,7 @@ Read [references/usage.md](references/usage.md) for JSON config examples, direct
 - [references/installation.md](references/installation.md): one-time CLI install, agent MCP install commands, and macOS permissions.
 - [references/usage.md](references/usage.md): MCP config, direct CLI calls, sequencing, and platform behavior.
 - [references/troubleshooting.md](references/troubleshooting.md): permission, desktop-session, app discovery, and action failures.
+- [references/input-troubleshooting.md](references/input-troubleshooting.md): text input fallback ladder, Electron/web quirks, and clipboard safety.
+- [references/output-recipes.md](references/output-recipes.md): text-only state, quiet JSON output, screenshot decoding, and index reuse.
+- [references/app-recipes.md](references/app-recipes.md): ZCode/Electron, Finder, TextEdit, and Chrome starting points.
+- [references/app-lifecycle.md](references/app-lifecycle.md): graceful quit, relaunch, activation, and unsaved-change handling.

@@ -83,6 +83,7 @@ test("parses positional, stdin, file, timeout, and JSON options", () => {
   assert.deepEqual(parseJavaScriptArgs(["--timeout", "60000", "--json", "nodeRepl.write(42)"]), {
     timeoutMs: 60_000,
     json: true,
+    quiet: false,
     filePath: undefined,
     sourceParts: ["nodeRepl.write(42)"],
   });
@@ -159,6 +160,29 @@ test("ocu js returns a non-zero exit when evaluation times out", async t => {
   });
   assert.equal(code, 1);
   assert.match(output.value(), /timed out after 100 ms/);
+});
+
+test("parseJavaScriptArgs accepts --quiet without changing other options", () => {
+  const options = parseJavaScriptArgs(["--quiet", "--timeout", "1234", "code"]);
+  assert.equal(options.quiet, true);
+  assert.equal(options.timeoutMs, 1234);
+  assert.deepEqual(options.sourceParts, ["code"]);
+});
+
+test("ocu js --quiet omits the JavaScript API guidance", async t => {
+  const fixture = makePackage();
+  t.after(fixture.cleanup);
+  const output = captureStream();
+  const errorOutput = captureStream();
+  const code = await main({
+    packageRoot: fixture.packageRoot,
+    platformPackages: fixture.platformPackages,
+    argv: ["js", "--quiet", "var app = await cua.getApp('TextEdit', { initialState:false }); nodeRepl.write('ok')"],
+    output: output.stream,
+    errorOutput: errorOutput.stream,
+  });
+  assert.equal(code, 0, errorOutput.value());
+  assert.equal(output.value().trim(), "ok");
 });
 
 test("ocu repl preserves bindings and reset discards them", async t => {

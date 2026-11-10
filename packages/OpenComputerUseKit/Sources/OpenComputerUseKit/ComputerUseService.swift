@@ -592,6 +592,25 @@ func canUseKeyboardTextFallback(role: String?, roleDescription: String?, isValue
         || roleDescription.contains("text entry")
 }
 
+/// Electron and other Chromium hosts can accept an `AXSelectedText` write and
+/// still leave the DOM value unchanged. Only an unchanged, readable value is a
+/// safe signal to retry through the keyboard path; without a readable value we
+/// keep the existing AX-success behavior.
+func shouldFallbackAfterAXSelectedTextWrite(
+    isWebTextControl: Bool,
+    beforeValue: String?,
+    afterValue: String?
+) -> Bool {
+    isWebTextControl && beforeValue != nil && afterValue == beforeValue
+}
+
+/// Only verify keyboard input on an empty web text control. Rich text editors
+/// may not expose `AXValue`, and replacing an existing selection with identical
+/// text can legitimately leave the value unchanged.
+func shouldVerifyKeyboardTextWrite(isWebTextControl: Bool, value: String?) -> Bool {
+    isWebTextControl && value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true
+}
+
 func isElectronScopedWebRowClickOptimizationTarget(appName: String, bundleIdentifier: String?) -> Bool {
     let normalizedBundleIdentifier = bundleIdentifier?
         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1050,8 +1069,21 @@ public final class ComputerUseService {
             throw ComputerUseError.stateUnavailable("type_text requires a focused editable text element. Click a text entry area first, or use set_value on a settable text element.")
         }
 
+        let beforeValue = keyboardTextWriteNeedsVerification(on: focused)
+            ? stringValue(of: focused, attribute: kAXValueAttribute)
+            : nil
         try requireCurrentTextFocus(focused, pid: snapshot.app.pid)
         try InputSimulation.typeText(text, pid: snapshot.app.pid)
+        if let beforeValue,
+           let afterValue = waitForStringAttribute(
+               kAXValueAttribute as String,
+               of: focused,
+               toChangeFrom: beforeValue,
+               timeout: 0.5
+           ),
+           afterValue == beforeValue {
+            throw ComputerUseError.stateUnavailable("type_text did not change the focused text element. The app may not accept background keyboard input; click the text entry area and try again, or use set_value on a settable text element.")
+        }
         return try actionResult(for: query)
     }
 
@@ -1895,10 +1927,10 @@ public final class ComputerUseService {
         )
     }
 
-    private func hasAncestorRole(_ role: String, of element: AXUIElement) -> Bool {
+    private func hasAncestorRole(_ role: String, of element: AXUIElement, maxDepth: Int = 12) -> Bool {
         var current = element
 
-        for _ in 0..<12 {
+        for _ in 0..<maxDepth {
             guard let parent = copyParent(of: current) else {
                 return false
             }
@@ -1953,9 +1985,12 @@ public final class ComputerUseService {
         var caret: Int?
         // SelectedText preserves the selection/caret and rich text. It can be
         // writable even when replacing the entire AXValue is not supported.
-        if isSettable(element: element, attribute: kAXSelectedTextAttribute) {
+        let axSelectedTextWrite = isSettable(element: element, attribute: kAXSelectedTextAttribute)
+        var beforeValue: String?
+        if axSelectedTextWrite {
             attribute = kAXSelectedTextAttribute
             value = text
+            beforeValue = stringValue(of: element, attribute: kAXValueAttribute)
         } else {
             let valueWritable = isSettable(element: element, attribute: kAXValueAttribute)
             let rangeWritable = isSettable(element: element, attribute: kAXSelectedTextRangeAttribute)
@@ -1996,7 +2031,49 @@ public final class ComputerUseService {
                   let applied = selectedRange(of: element), applied.location == caret, applied.length == 0
             else { throw ComputerUseError.stateUnavailable("type_text wrote the text but could not restore the caret. Read the current text before retrying.") }
         }
+        if axSelectedTextWrite,
+           hasAncestorRole("AXWebArea", of: element, maxDepth: 64),
+           let beforeValue {
+            let afterValue = waitForStringAttribute(
+                kAXValueAttribute as String,
+                of: element,
+                toChangeFrom: beforeValue,
+                timeout: 0.25
+            )
+            if shouldFallbackAfterAXSelectedTextWrite(
+                isWebTextControl: true,
+                beforeValue: beforeValue,
+                afterValue: afterValue
+            ) {
+                if inputFallbackDebugEnabled(environment: ProcessInfo.processInfo.environment) {
+                    fputs("[open-computer-use] type_text ax_selected_text_write_no_effect; falling back to keyboard\n", stderr)
+                }
+                return false
+            }
+        }
         return true
+    }
+
+    private func waitForStringAttribute(
+        _ attribute: String,
+        of element: AXUIElement,
+        toChangeFrom original: String,
+        timeout: TimeInterval
+    ) -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var current = stringValue(of: element, attribute: attribute)
+        while current == original, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            current = stringValue(of: element, attribute: attribute)
+        }
+        return current
+    }
+
+    private func keyboardTextWriteNeedsVerification(on element: AXUIElement) -> Bool {
+        shouldVerifyKeyboardTextWrite(
+            isWebTextControl: hasAncestorRole("AXWebArea", of: element, maxDepth: 64),
+            value: stringValue(of: element, attribute: kAXValueAttribute)
+        )
     }
 
     private func canTypeTextUsingKeyboardFallback(on element: AXUIElement) -> Bool {
