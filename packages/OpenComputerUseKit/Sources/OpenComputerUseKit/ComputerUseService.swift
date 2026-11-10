@@ -1343,7 +1343,7 @@ public final class ComputerUseService {
             record = ElementRecord(index: index, identifier: source.identifier, element: source.element,
                                    localFrame: source.localFrame, role: source.role, title: source.title, value: source.value,
                                    rawActions: source.rawActions, prettyActions: source.prettyActions, isSyntheticText: source.isSyntheticText)
-            return TargetedElement(record: record, context: context, criteria: criteria)
+            return TargetedElement(record: record, context: context, criteria: source.targetedMatchCriteria ?? criteria)
         }
         return compactRecordDictionary(record)
     }

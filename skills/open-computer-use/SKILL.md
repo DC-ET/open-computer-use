@@ -28,6 +28,12 @@ retries text-only and promotes a matching descendant's nearest ancestor with the
 requested role. This makes `query({ "role": "AXRow", "text": "Desktop" })` work
 when the row label lives on a child `AXStaticText`.
 
+Element-targeted actions (`click`, `set_value`, `scroll`,
+`perform_secondary_action`) accept the same `text` / `role` / `exact` /
+`max_nodes` selector fields when `element_index` is omitted. A selector runs
+through `query` in the same call and must resolve exactly one control.
+`element_index` and a selector cannot be combined.
+
 On macOS, `ocu app status|activate|launch|quit <bundle-id>` provides a small app
 lifecycle surface on top of LaunchServices and AppleScript. `quit` waits for the
 process to exit but does not click through unsaved-changes dialogs.
@@ -78,6 +84,7 @@ open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":1000
 open-computer-use call get_app_state --args '{"app":"TextEdit","text_limit":"max"}' --no-screenshot
 open-computer-use call get_app_state --args '{"app":"Google Chrome","max_tree_nodes":3000,"max_tree_depth":96}' --no-screenshot
 open-computer-use call click --args '{"app":"TextEdit","element_index":"0"}'
+open-computer-use call click --args '{"app":"ZCode","text":"发送","role":"AXButton"}'
 open-computer-use call type_text --args '{"app":"TextEdit","text":"Hello from Open Computer Use"}'
 ```
 

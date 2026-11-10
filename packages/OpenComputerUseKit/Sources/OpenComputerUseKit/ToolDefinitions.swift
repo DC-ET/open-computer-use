@@ -48,12 +48,12 @@ public enum ToolDefinitions {
     private static let definitions: [ToolDefinition] = [
         ToolDefinition(
             name: "click",
-            description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
+            description: "Click an element by index, by a text/role selector, or by pixel coordinates from a screenshot. When element_index is omitted, text and/or role must resolve exactly one control. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
                     "app": stringProperty(description: "App name or bundle identifier"),
-                    "element_index": stringProperty(description: "Element index to click"),
+                    "element_index": stringProperty(description: "Element index to click. Takes precedence over a selector and cannot be combined with text/role."),
                     "x": numberProperty(description: "X coordinate in screenshot pixel coordinates"),
                     "y": numberProperty(description: "Y coordinate in screenshot pixel coordinates"),
                     "click_count": integerProperty(description: "Number of clicks. Defaults to 1"),
@@ -65,7 +65,7 @@ public enum ToolDefinitions {
                         description: "Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. app_post sends a public event directly to the target app. sky_click uses the macOS SkyLight background window path. Global may move the system pointer and requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1.",
                         enumValues: ClickMethod.allCases.map(\.rawValue)
                     ),
-                ],
+                ].merging(selectorProperties(), uniquingKeysWith: { current, _ in current }),
                 required: ["app"]
             )
         ),
@@ -132,15 +132,15 @@ public enum ToolDefinitions {
         ),
         ToolDefinition(
             name: "perform_secondary_action",
-            description: "Invoke a secondary accessibility action exposed by an element. This tool is part of plugin `Computer Use`.",
+            description: "Invoke a secondary accessibility action exposed by an element. Target it by element_index or by a text/role selector. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
                     "app": stringProperty(description: "App name or bundle identifier"),
-                    "element_index": stringProperty(description: "Element identifier"),
+                    "element_index": stringProperty(description: "Element identifier. Cannot be combined with text/role."),
                     "action": stringProperty(description: "Secondary accessibility action name"),
-                ],
-                required: ["app", "element_index", "action"]
+                ].merging(selectorProperties(), uniquingKeysWith: { current, _ in current }),
+                required: ["app", "action"]
             )
         ),
         ToolDefinition(
@@ -158,29 +158,29 @@ public enum ToolDefinitions {
         ),
         ToolDefinition(
             name: "scroll",
-            description: "Scroll an element in a direction by a number of pages. This tool is part of plugin `Computer Use`.",
+            description: "Scroll an element in a direction by a number of pages. Target it by element_index or by a text/role selector. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
                     "app": stringProperty(description: "App name or bundle identifier"),
                     "direction": stringProperty(description: "Scroll direction: up, down, left, or right"),
-                    "element_index": stringProperty(description: "Element identifier"),
+                    "element_index": stringProperty(description: "Element identifier. Cannot be combined with text/role."),
                     "pages": numberProperty(description: "Number of pages to scroll. Fractional values are supported. Defaults to 1"),
-                ],
-                required: ["app", "element_index", "direction"]
+                ].merging(selectorProperties(), uniquingKeysWith: { current, _ in current }),
+                required: ["app", "direction"]
             )
         ),
         ToolDefinition(
             name: "set_value",
-            description: "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error, even when full action read-back is disabled. This tool is part of plugin `Computer Use`.",
+            description: "Set the value of a settable accessibility element and verify the actual value. Target it by element_index or by a text/role selector. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error, even when full action read-back is disabled. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
                     "app": stringProperty(description: "App name or bundle identifier"),
-                    "element_index": stringProperty(description: "Element identifier"),
+                    "element_index": stringProperty(description: "Element identifier. Cannot be combined with text/role."),
                     "value": stringProperty(description: "Value to assign"),
-                ],
-                required: ["app", "element_index", "value"]
+                ].merging(selectorProperties(), uniquingKeysWith: { current, _ in current }),
+                required: ["app", "value"]
             )
         ),
         ToolDefinition(
@@ -266,6 +266,21 @@ private func stringProperty(description: String, enumValues: [String]? = nil) ->
     }
 
     return property
+}
+
+/// Optional selector fields shared by element-targeted actions. When
+/// `element_index` is omitted, the action resolves exactly one `query` match
+/// from `text` / `role` in the same call.
+private func selectorProperties() -> [String: Any] {
+    [
+        "text": stringProperty(description: "Select a control by text in its title, description or value. Use with role and/or exact. Cannot be combined with element_index."),
+        "role": stringProperty(description: "Select a control by accessibility role. The AX prefix is optional, e.g. button or AXButton."),
+        "exact": [
+            "type": "boolean",
+            "description": "Require an exact text match for the selector. Defaults to false.",
+        ],
+        "max_nodes": positiveIntegerProperty(description: "Node budget for selector lookup. Defaults to 500; capped at 5000."),
+    ]
 }
 
 private func integerProperty(description: String) -> [String: Any] {
