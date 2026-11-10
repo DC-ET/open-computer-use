@@ -52,6 +52,13 @@ public final class ComputerUseToolDispatcher {
     }
 
     private func dispatchTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
+        let unknown = unknownArgumentNames(tool: name, arguments: arguments, declared: ToolDefinitions.declaredArgumentNames)
+        if !unknown.isEmpty {
+            throw ComputerUseError.invalidArguments(
+                unknownArgumentMessage(tool: name, unknown: unknown, allowed: ToolDefinitions.declaredArgumentNames[name] ?? [])
+            )
+        }
+
         switch name {
         case "list_apps":
             return service.listApps()
@@ -640,4 +647,24 @@ func validatedQueryExact(_ value: Any?) throws -> Bool {
         throw ComputerUseError.invalidArguments("exact must be true or false")
     }
     return number.boolValue
+}
+
+/// Arguments the tool does not declare. Keys starting with "_" carry host
+/// metadata rather than tool intent, so they are left alone.
+func unknownArgumentNames(tool: String, arguments: [String: Any], declared: [String: Set<String>]) -> [String] {
+    guard let allowed = declared[tool] else { return [] }
+    return arguments.keys.filter { !allowed.contains($0) && !$0.hasPrefix("_") }.sorted()
+}
+
+/// Name the offender and the accepted set. Ignoring an unknown argument turned
+/// `{"key": "v", "modifiers": ["cmd"]}` into a bare "v", so the message points at
+/// the fix instead of quietly doing something else.
+func unknownArgumentMessage(tool: String, unknown: [String], allowed: Set<String>) -> String {
+    let list = unknown.joined(separator: ", ")
+    let noun = unknown.count == 1 ? "argument" : "arguments"
+    var message = "\(tool): unknown \(noun) \(list). Accepted: \(allowed.sorted().joined(separator: ", "))."
+    if tool == "press_key", unknown.contains("modifiers") {
+        message += " Press combinations go in key, for example {\"key\": \"cmd+v\"}."
+    }
+    return message
 }

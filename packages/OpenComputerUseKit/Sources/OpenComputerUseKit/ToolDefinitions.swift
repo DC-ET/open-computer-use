@@ -45,6 +45,16 @@ public enum ToolDefinitions {
         }
     }
 
+    /// Every argument each tool accepts, taken from the full schema rather than the
+    /// runtime-trimmed one: a client that still sends `window_placement` should be
+    /// handled by the tool, not rejected as an unknown argument.
+    static var declaredArgumentNames: [String: Set<String>] {
+        Dictionary(uniqueKeysWithValues: definitions.compactMap { tool in
+            guard let properties = tool.inputSchema["properties"] as? [String: Any] else { return nil }
+            return (tool.name, Set(properties.keys))
+        })
+    }
+
     private static let definitions: [ToolDefinition] = [
         ToolDefinition(
             name: "click",
@@ -172,7 +182,7 @@ public enum ToolDefinitions {
         ),
         ToolDefinition(
             name: "set_value",
-            description: "Set the value of a settable accessibility element and verify the actual value. Target it by element_index or by a text/role selector. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error, even when full action read-back is disabled. This tool is part of plugin `Computer Use`.",
+            description: "Set the value of a settable accessibility element and verify the actual value. Target it by element_index or by a text/role selector. Text is compared exactly, including whitespace; an empty string clears it. A control that reports a different value is an error. A control that exposes no readable value at all returns success with a note, because the write cannot be checked and a retry could write twice. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
