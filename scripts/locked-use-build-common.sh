@@ -54,7 +54,8 @@ locked_use_sign() {
   if [[ -n "${OPEN_COMPUTER_USE_CODESIGN_KEYCHAIN:-}" ]]; then
     args+=(--keychain "$OPEN_COMPUTER_USE_CODESIGN_KEYCHAIN")
   fi
-  locked_use_with_keychain /usr/bin/codesign "${args[@]}" "$@"
+  # bash 3.2 (macOS) treats an empty "${args[@]}" as unset under `set -u`.
+  locked_use_with_keychain /usr/bin/codesign ${args[@]+"${args[@]}"} "$@"
 }
 
 locked_use_version="$(python3 - "$repo_root/plugins/open-computer-use/.codex-plugin/plugin.json" <<'PYVERSION'
