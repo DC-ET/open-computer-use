@@ -81,7 +81,7 @@ public enum ToolDefinitions {
         ),
         ToolDefinition(
             name: "drag",
-            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment, which may move the real pointer. The result reports which path was used. This tool is part of plugin `Computer Use`.",
+            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment, which may move the real pointer. The result reports which path was used. Web pages are detected automatically because their drag-and-drop only sees window-server events. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
@@ -90,6 +90,10 @@ public enum ToolDefinitions {
                     "from_y": numberProperty(description: "Start Y coordinate"),
                     "to_x": numberProperty(description: "End X coordinate"),
                     "to_y": numberProperty(description: "End Y coordinate"),
+                    "method": stringProperty(
+                        description: "How to deliver the drag. auto (default) uses the window-server pointer path for web pages (Chromium, Electron, CEF, WebKit), whose drag-and-drop ignores posted events, and app_post for native controls. app_post never moves the real pointer but cannot drive web drag-and-drop. global always uses the window-server pointer and may move the pointer or change focus.",
+                        enumValues: DragDeliveryMethod.allCases.map(\.rawValue)
+                    ),
                 ],
                 required: ["app", "from_x", "from_y", "to_x", "to_y"]
             )

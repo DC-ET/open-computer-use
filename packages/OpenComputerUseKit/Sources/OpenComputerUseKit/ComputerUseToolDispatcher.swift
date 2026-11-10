@@ -129,7 +129,8 @@ public final class ComputerUseToolDispatcher {
                 fromX: requireDouble("from_x", in: arguments),
                 fromY: requireDouble("from_y", in: arguments),
                 toX: requireDouble("to_x", in: arguments),
-                toY: requireDouble("to_y", in: arguments)
+                toY: requireDouble("to_y", in: arguments),
+                method: try parseDragDeliveryMethod(optionalString("method", in: arguments))
             )
         case "type_text":
             return try service.typeText(
@@ -667,4 +668,14 @@ func unknownArgumentMessage(tool: String, unknown: [String], allowed: Set<String
         message += " Press combinations go in key, for example {\"key\": \"cmd+v\"}."
     }
     return message
+}
+
+/// How a drag reaches the target. `auto` is the default: web pages need the
+/// window-server path, native controls do not.
+func parseDragDeliveryMethod(_ raw: String?) throws -> DragDeliveryMethod {
+    guard let raw else { return .auto }
+    guard let method = DragDeliveryMethod(rawValue: raw) else {
+        throw ComputerUseError.invalidArguments("method must be one of: auto, app_post, global")
+    }
+    return method
 }
