@@ -46,12 +46,13 @@ decoded as MacRoman by Electron.
 
 ## Finder
 
-Finder rows often expose their label on a child `AXStaticText`, so a
-`query({ role: "AXRow", text: "..." })` can return zero matches while the row is
-visible in the AX tree. Use the full state and the row's `element_index`:
+Finder rows often expose their label on a child `AXStaticText`.
+`query({ role: "AXRow", text: "..." })` now promotes a text match to the
+nearest ancestor with the requested role, so it returns the row itself. Query
+with text only when you want the child static text.
 
 ```sh
-ocu call get_app_state --args '{"app":"Finder"}' --no-screenshot
+ocu call query --args '{"app":"Finder","text":"桌面","role":"AXRow","exact":true}'
 ocu call --calls '[
   {"tool":"get_app_state","args":{"app":"Finder","include_screenshot":false}},
   {"tool":"click","args":{"app":"Finder","element_index":"7"}}

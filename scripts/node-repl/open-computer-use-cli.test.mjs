@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +10,9 @@ import {
   inspectCapabilities,
   launcherHelp,
   main,
+  parseAppArgs,
   parseJavaScriptArgs,
+  parseLSAppInfoPID,
   renderCapabilityReport,
 } from "./open-computer-use-cli.mjs";
 
@@ -21,6 +24,23 @@ function captureStream() {
   stream.setEncoding("utf8");
   stream.on("data", chunk => { value += chunk; });
   return { stream, value: () => value };
+}
+
+function fakeSpawn(handler) {
+  return (command, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    const response = handler(command, args) ?? {};
+    queueMicrotask(() => {
+      if (response.stdout) child.stdout.write(response.stdout);
+      if (response.stderr) child.stderr.write(response.stderr);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit("close", response.code ?? 0);
+    });
+    return child;
+  };
 }
 
 function makePackage() {
@@ -183,6 +203,95 @@ test("ocu js --quiet omits the JavaScript API guidance", async t => {
   });
   assert.equal(code, 0, errorOutput.value());
   assert.equal(output.value().trim(), "ok");
+});
+
+test("parseAppArgs validates actions, bundle ids and timeouts", () => {
+  assert.deepEqual(parseAppArgs(["status", "dev.zcode.app", "--json"]), {
+    action: "status",
+    bundleId: "dev.zcode.app",
+    timeoutMs: 10_000,
+    json: true,
+    help: false,
+  });
+  assert.equal(parseAppArgs(["quit", "dev.zcode.app", "--timeout", "2.5"]).timeoutMs, 2_500);
+  assert.equal(parseAppArgs(["activate", "dev.zcode.app"]).action, "activate");
+  assert.throws(() => parseAppArgs(["open", "dev.zcode.app"]), /app expects one of/);
+  assert.throws(() => parseAppArgs(["status"]), /requires a bundle identifier/);
+  assert.throws(() => parseAppArgs(["status", "bad id"]), /Invalid bundle identifier/);
+  assert.throws(() => parseAppArgs(["status", "dev.zcode.app", "--timeout", "0"]), /positive number/);
+});
+
+test("parseLSAppInfoPID reads the pid line and ignores an empty result", () => {
+  assert.equal(parseLSAppInfoPID('"pid"=4321\n'), 4321);
+  assert.equal(parseLSAppInfoPID(""), undefined);
+  assert.equal(parseLSAppInfoPID("no pid here"), undefined);
+});
+
+test("app status reports running state as JSON", async t => {
+  const fixture = makePackage();
+  t.after(fixture.cleanup);
+  const output = captureStream();
+  const errorOutput = captureStream();
+  const code = await main({
+    packageRoot: fixture.packageRoot,
+    platformPackages: fixture.platformPackages,
+    argv: ["app", "status", "dev.zcode.app", "--json"],
+    output: output.stream,
+    errorOutput: errorOutput.stream,
+    platform: "darwin",
+    spawnFn: fakeSpawn(command => command === "lsappinfo" ? { stdout: '"pid"=321\n' } : {}),
+  });
+  assert.equal(code, 0, errorOutput.value());
+  assert.deepEqual(JSON.parse(output.value()), {
+    bundleId: "dev.zcode.app",
+    action: "status",
+    running: true,
+    pid: 321,
+  });
+});
+
+test("app quit waits for the process to disappear", async t => {
+  const fixture = makePackage();
+  t.after(fixture.cleanup);
+  const output = captureStream();
+  const errorOutput = captureStream();
+  let statusCalls = 0;
+  const code = await main({
+    packageRoot: fixture.packageRoot,
+    platformPackages: fixture.platformPackages,
+    argv: ["app", "quit", "dev.zcode.app", "--timeout", "1"],
+    output: output.stream,
+    errorOutput: errorOutput.stream,
+    platform: "darwin",
+    spawnFn: fakeSpawn(command => {
+      if (command === "lsappinfo") {
+        statusCalls += 1;
+        return statusCalls === 1 ? { stdout: '"pid"=321\n' } : {};
+      }
+      if (command === "osascript") return {};
+      throw new Error(`unexpected command: ${command}`);
+    }),
+  });
+  assert.equal(code, 0, errorOutput.value());
+  assert.equal(output.value().trim(), "quit dev.zcode.app");
+});
+
+test("app quit reports a remaining process as a non-zero result", async t => {
+  const fixture = makePackage();
+  t.after(fixture.cleanup);
+  const output = captureStream();
+  const errorOutput = captureStream();
+  const code = await main({
+    packageRoot: fixture.packageRoot,
+    platformPackages: fixture.platformPackages,
+    argv: ["app", "quit", "dev.zcode.app", "--timeout", "1"],
+    output: output.stream,
+    errorOutput: errorOutput.stream,
+    platform: "darwin",
+    spawnFn: fakeSpawn(command => command === "lsappinfo" ? { stdout: '"pid"=321\n' } : {}),
+  });
+  assert.equal(code, 1);
+  assert.match(output.value(), /still running \(pid 321\)/);
 });
 
 test("ocu repl preserves bindings and reset discards them", async t => {

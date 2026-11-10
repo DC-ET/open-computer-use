@@ -23,6 +23,14 @@ first match. JavaScript exposes `app.selectText(elementIndex, text, options?)`. 
 
 macOS additionally exposes `query`: a targeted accessibility lookup that finds
 controls by text and/or role without rendering a tree or taking a screenshot.
+When both `role` and `text` are provided and no direct match exists, `query`
+retries text-only and promotes a matching descendant's nearest ancestor with the
+requested role. This makes `query({ "role": "AXRow", "text": "Desktop" })` work
+when the row label lives on a child `AXStaticText`.
+
+On macOS, `ocu app status|activate|launch|quit <bundle-id>` provides a small app
+lifecycle surface on top of LaunchServices and AppleScript. `quit` waits for the
+process to exit but does not click through unsaved-changes dialogs.
 
 ## Core Workflow
 
@@ -55,6 +63,10 @@ controls by text and/or role without rendering a tree or taking a screenshot.
 open-computer-use -h
 ocu -h
 ocu capabilities --json
+ocu app status dev.zcode.app
+ocu app launch com.apple.calculator
+ocu app activate com.apple.calculator
+ocu app quit com.apple.calculator --timeout 5
 ocu js --quiet 'nodeRepl.write(6 * 7)'
 ocu repl
 open-computer-use doctor
