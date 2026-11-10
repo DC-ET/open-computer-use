@@ -96,5 +96,20 @@ ocu call --calls '[
 ]' --no-screenshot
 ```
 
+## Selectors instead of indexes
+
+When the target is identifiable by text or role, `click` / `set_value` / `scroll`
+/ `perform_secondary_action` accept selector fields directly. This avoids
+depending on an element index from a previous process:
+
+```sh
+ocu call click --args '{"app":"ZCode","text":"发送","role":"AXButton"}'
+ocu call click --args '{"app":"Finder","text":"桌面","role":"AXRow","exact":true}'
+```
+
+The selector must resolve exactly one control. If it matches zero or multiple
+controls, the call fails without acting; refine `text`, add `role`, or use
+`element_index`. `element_index` and text/role cannot be combined.
+
 `--calls` stops after the first `isError: true` result and sleeps one second
 between successful operations by default. Use `--sleep` to change the delay.

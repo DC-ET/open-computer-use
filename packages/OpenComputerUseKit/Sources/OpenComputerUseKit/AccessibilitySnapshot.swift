@@ -17,6 +17,9 @@ final class ElementRecord {
     let isSyntheticText: Bool
     /// What the snapshot showed at this index, checked before any action on it; nil where no check applies.
     let identity: ElementIdentity?
+    /// Criteria that actually matched this record. A promoted ancestor uses a
+    /// role-only criteria because the text lives on a descendant.
+    var targetedMatchCriteria: TargetedAX.Criteria?
 
     init(
         index: Int,
@@ -29,7 +32,8 @@ final class ElementRecord {
         rawActions: [String],
         prettyActions: [String],
         isSyntheticText: Bool = false,
-        identity: ElementIdentity? = nil
+        identity: ElementIdentity? = nil,
+        targetedMatchCriteria: TargetedAX.Criteria? = nil
     ) {
         self.index = index
         self.identifier = identifier
@@ -42,6 +46,7 @@ final class ElementRecord {
         self.prettyActions = prettyActions
         self.isSyntheticText = isSyntheticText
         self.identity = identity
+        self.targetedMatchCriteria = targetedMatchCriteria
     }
 }
 
@@ -2563,6 +2568,13 @@ extension SnapshotBuilder {
         let textResult = try targetedSearchDirect(textCriteria, in: context)
         guard !textResult.records.isEmpty else { return textResult }
 
+        let roleCriteria = TargetedAX.Criteria(
+            text: nil,
+            exact: criteria.exact,
+            role: criteria.role,
+            limit: criteria.limit,
+            maxNodes: criteria.maxNodes
+        )
         var promoted: [ElementRecord] = []
         var seen = Set<AXSearchNode>()
         for record in textResult.records {
@@ -2580,8 +2592,7 @@ extension SnapshotBuilder {
                 } ?? true
                 if visible,
                    targetedRecordMatches(
-                    TargetedAX.Criteria(text: nil, exact: criteria.exact, role: criteria.role,
-                                        limit: criteria.limit, maxNodes: criteria.maxNodes),
+                    roleCriteria,
                     role: scan.role,
                     title: scan.title,
                     description: scan.description,
@@ -2589,7 +2600,9 @@ extension SnapshotBuilder {
                 ) {
                     let node = AXSearchNode(element: parent)
                     if seen.insert(node).inserted {
-                        promoted.append(makeRecord(parent, scan: scan, windowBounds: context.windowBounds))
+                        let record = makeRecord(parent, scan: scan, windowBounds: context.windowBounds)
+                        record.targetedMatchCriteria = roleCriteria
+                        promoted.append(record)
                     }
                     break
                 }
@@ -2625,7 +2638,11 @@ extension SnapshotBuilder {
             let visible = scan.globalFrame.map { frame in frame.isEmpty || clip.map { frame.intersects($0) } ?? true } ?? true
             if visible, criteria.text != nil, [scan.title, scan.description, scan.value].contains(where: { ($0?.count ?? 0) > 1000 }) { textTruncated = true }
             let matches = visible && targetedRecordMatches(criteria, role: scan.role, title: scan.title, description: scan.description, value: scan.value)
-            if matches { records[node] = makeRecord(node.element, scan: scan, windowBounds: context.windowBounds) }
+            if matches {
+                let record = makeRecord(node.element, scan: scan, windowBounds: context.windowBounds)
+                record.targetedMatchCriteria = criteria
+                records[node] = record
+            }
             return (matches, visible)
         }, children: { node, remaining in
             guard !expired() else { return ([], true) }

@@ -936,6 +936,52 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertEqual(emptyResult.primaryText, "Missing required argument: text")
     }
 
+    func testSelectorActionsRejectConflictingTargets() {
+        let dispatcher = ComputerUseToolDispatcher()
+
+        let indexAndText = dispatcher.callToolAsResult(
+            name: "click",
+            arguments: ["app": "Sublime Text", "element_index": "1", "text": "Send"]
+        )
+        XCTAssertTrue(indexAndText.isError)
+        XCTAssertEqual(indexAndText.primaryText, "Use either element_index or text/role, not both")
+
+        let pointAndText = dispatcher.callToolAsResult(
+            name: "click",
+            arguments: ["app": "Sublime Text", "x": 1, "y": 2, "text": "Send"]
+        )
+        XCTAssertTrue(pointAndText.isError)
+        XCTAssertEqual(pointAndText.primaryText, "Use either x/y or text/role, not both")
+    }
+
+    func testSelectorActionsRequireIndexOrSelector() {
+        let dispatcher = ComputerUseToolDispatcher()
+        let cases: [(String, [String: Any])] = [
+            ("set_value", ["app": "Sublime Text", "value": "x"]),
+            ("scroll", ["app": "Sublime Text", "direction": "down"]),
+            ("perform_secondary_action", ["app": "Sublime Text", "action": "AXPress"]),
+        ]
+
+        for (name, arguments) in cases {
+            let result = dispatcher.callToolAsResult(name: name, arguments: arguments)
+            XCTAssertTrue(result.isError, name)
+            XCTAssertEqual(result.primaryText, "Missing required argument: element_index or text/role", name)
+        }
+    }
+
+    func testElementActionSchemasExposeSelectorProperties() {
+        for name in ["click", "set_value", "scroll", "perform_secondary_action"] {
+            guard let tool = ToolDefinitions.all.first(where: { $0.name == name }),
+                  let properties = tool.inputSchema["properties"] as? [String: Any] else {
+                XCTFail("missing schema for \(name)")
+                continue
+            }
+            for key in ["text", "role", "exact", "max_nodes"] {
+                XCTAssertNotNil(properties[key], "\(name) is missing \(key)")
+            }
+        }
+    }
+
     func testTypeTextUnicodeChunksPreserveGraphemeClusters() {
         let text = "（ocu发的）👩🏽‍💻e\u{301}𠀀"
         let chunks = InputSimulation.keyboardUnicodeChunks(for: text, maxUTF16Units: 8)

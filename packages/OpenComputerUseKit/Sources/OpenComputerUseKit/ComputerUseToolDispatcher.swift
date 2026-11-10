@@ -81,9 +81,14 @@ public final class ComputerUseToolDispatcher {
                 )
             )
         case "click":
+            let app = try requireString("app", in: arguments)
+            let hasPoint = optionalDouble("x", in: arguments) != nil || optionalDouble("y", in: arguments) != nil
+            if hasPoint, try selectorArguments(in: arguments) != nil {
+                throw ComputerUseError.message("Use either x/y or text/role, not both")
+            }
             return try service.click(
-                app: requireString("app", in: arguments),
-                elementIndex: optionalElementIndex(in: arguments),
+                app: app,
+                elementIndex: try resolveElementIndex(app: app, arguments: arguments, required: !hasPoint),
                 x: optionalDouble("x", in: arguments),
                 y: optionalDouble("y", in: arguments),
                 clickCount: Int(optionalDouble("click_count", in: arguments) ?? 1),
@@ -91,16 +96,24 @@ public final class ComputerUseToolDispatcher {
                 clickMethod: try parseClickMethod(optionalString("click_method", in: arguments))
             )
         case "perform_secondary_action":
+            let app = try requireString("app", in: arguments)
+            guard let elementIndex = try resolveElementIndex(app: app, arguments: arguments) else {
+                throw ComputerUseError.missingArgument("element_index or text/role")
+            }
             return try service.performSecondaryAction(
-                app: requireString("app", in: arguments),
-                elementIndex: requireElementIndex(in: arguments),
+                app: app,
+                elementIndex: elementIndex,
                 action: requireString("action", in: arguments)
             )
         case "scroll":
+            let app = try requireString("app", in: arguments)
+            guard let elementIndex = try resolveElementIndex(app: app, arguments: arguments) else {
+                throw ComputerUseError.missingArgument("element_index or text/role")
+            }
             return try service.scroll(
-                app: requireString("app", in: arguments),
+                app: app,
                 direction: requireString("direction", in: arguments),
-                elementIndex: requireElementIndex(in: arguments),
+                elementIndex: elementIndex,
                 pages: optionalDouble("pages", in: arguments) ?? 1
             )
         case "drag":
@@ -124,9 +137,13 @@ public final class ComputerUseToolDispatcher {
                 keyMethod: try parseKeyMethod(optionalString("key_method", in: arguments))
             )
         case "set_value":
+            let app = try requireString("app", in: arguments)
+            guard let elementIndex = try resolveElementIndex(app: app, arguments: arguments) else {
+                throw ComputerUseError.missingArgument("element_index or text/role")
+            }
             return try service.setValue(
-                app: requireString("app", in: arguments),
-                elementIndex: requireElementIndex(in: arguments),
+                app: app,
+                elementIndex: elementIndex,
                 value: requireString("value", in: arguments, allowEmpty: true)
             )
         case "select_text":
@@ -241,6 +258,80 @@ public final class ComputerUseToolDispatcher {
 
     private func optionalElementIndex(in arguments: [String: Any]) -> String? {
         normalizedElementIndexArgument(arguments["element_index"])
+    }
+
+    private struct SelectorArguments {
+        let text: String?
+        let role: String?
+        let exact: Bool
+        let maxNodes: Int
+    }
+
+    private func selectorArguments(in arguments: [String: Any]) throws -> SelectorArguments? {
+        let text = optionalString("text", in: arguments)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let role = optionalString("role", in: arguments)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text?.isEmpty == false || role?.isEmpty == false else { return nil }
+        return SelectorArguments(
+            text: text?.isEmpty == true ? nil : text,
+            role: role?.isEmpty == true ? nil : role,
+            exact: optionalBool("exact", in: arguments) ?? false,
+            maxNodes: try optionalPositiveInt("max_nodes", in: arguments) ?? 500
+        )
+    }
+
+    /// Resolve `element_index` or a `text` / `role` selector to a session-local
+    /// element index. Selectors run through the same `query` implementation, so
+    /// the resulting index is valid for the following action in this call.
+    private func resolveElementIndex(
+        app: String,
+        arguments: [String: Any],
+        required: Bool = true
+    ) throws -> String? {
+        let explicit = optionalElementIndex(in: arguments)
+        let selector = try selectorArguments(in: arguments)
+        if explicit != nil, selector != nil {
+            throw ComputerUseError.message("Use either element_index or text/role, not both")
+        }
+        if let explicit {
+            return explicit
+        }
+        guard let selector else {
+            if required {
+                throw ComputerUseError.missingArgument("element_index or text/role")
+            }
+            return nil
+        }
+
+        let result = try service.query(
+            app: app,
+            text: selector.text,
+            role: selector.role,
+            exact: selector.exact,
+            limit: 5,
+            maxNodes: selector.maxNodes
+        )
+        let matches = result["matches"] as? [[String: Any]] ?? []
+        if matches.isEmpty {
+            throw ComputerUseError.stateUnavailable(
+                "No element matched text=\(selector.text ?? "*") role=\(selector.role ?? "*"). Run `query` to inspect available controls."
+            )
+        }
+        if matches.count > 1 {
+            let summary = matches.prefix(5).map { match -> String in
+                let role = match["role"] as? String ?? "?"
+                let label = (match["title"] as? String) ?? (match["value"] as? String) ?? ""
+                return label.isEmpty ? role : "\(role) \(label)"
+            }.joined(separator: ", ")
+            throw ComputerUseError.message(
+                "Selector matched multiple elements; refine text/role or pass element_index. Matches: \(summary)"
+            )
+        }
+        guard let index = matches[0]["index"] as? Int else {
+            throw ComputerUseError.stateUnavailable("Query returned a match without an element index")
+        }
+        return String(index)
     }
 
     private func requireDouble(_ key: String, in arguments: [String: Any]) throws -> Double {
