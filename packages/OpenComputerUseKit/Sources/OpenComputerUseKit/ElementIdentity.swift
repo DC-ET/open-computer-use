@@ -30,11 +30,28 @@ struct ElementIdentity: Equatable {
     }
 
     static func validate(index: String, recorded: ElementIdentity, now: ElementIdentity?) throws {
-        guard recorded.role != nil, now == recorded else {
+        guard let now else {
             throw ComputerUseError.stateUnavailable(
-                "element \(index) no longer has the identity the snapshot showed, or could not be checked; call get_app_state again (nothing was sent)"
+                "element \(index): the snapshot's control (\(recorded.described)) could not be read back for the identity check; call get_app_state again (nothing was sent)"
             )
         }
+        guard recorded.role != nil, now == recorded else {
+            throw ComputerUseError.stateUnavailable(
+                "element \(index) no longer has the identity the snapshot showed (was \(recorded.described), now \(now.described)); call get_app_state again (nothing was sent)"
+            )
+        }
+    }
+
+    /// AX reports a missing attribute as `.noValue` or `.attributeUnsupported`, but
+    /// TextEdit answers plain `.failure` for `AXDescription` on its text view. Role
+    /// and subrole stay strict: they decide what the control is and whether it is a
+    /// password field, so an unreadable one must never be guessed. The descriptive
+    /// attributes only sharpen the comparison, so their absence is tolerable.
+    static func identityAttributeAbsenceIsTolerable(_ error: AXError, attribute: String) -> Bool {
+        if attribute == kAXRoleAttribute || attribute == kAXSubroleAttribute {
+            return error == .attributeUnsupported || error == .noValue
+        }
+        return error == .attributeUnsupported || error == .noValue || error == .failure
     }
 
     /// Read identity without walking or rebinding to a different, same-named control.
@@ -48,7 +65,8 @@ struct ElementIdentity: Equatable {
         for (name, value) in zip(names, list) {
             if CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .axError {
                 var error = AXError.failure
-                guard AXValueGetValue(value as! AXValue, .axError, &error), error == .attributeUnsupported || error == .noValue else { return nil }
+                guard AXValueGetValue(value as! AXValue, .axError, &error),
+                      identityAttributeAbsenceIsTolerable(error, attribute: name) else { return nil }
             } else if let text = value as? String { read[name] = text }
             else if !(value is NSNull) { return nil }
         }
