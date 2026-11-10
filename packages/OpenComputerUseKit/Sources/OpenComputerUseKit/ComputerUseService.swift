@@ -273,25 +273,63 @@ enum DragDeliveryPath: String, CaseIterable {
     case global
 }
 
-func dragDeliveryPath(environment: [String: String]) -> DragDeliveryPath {
-    globalPointerFallbacksEnabled(environment: environment) ? .global : .appPost
+public enum DragDeliveryMethod: String, CaseIterable {
+    /// Pick per target: web pages need the window server, native controls do not.
+    case auto
+    case appPost = "app_post"
+    case global
 }
 
-func dragDeliveryNote(for path: DragDeliveryPath) -> String {
+/// Chromium, Electron, CEF and WebKit run drag-and-drop inside the web engine.
+/// The page only sees `dragstart`/`dragover` for a window-server drag session,
+/// which `postToPid` does not create, so such a drag silently does nothing.
+func appRunsWebDragAndDrop(bundleURL: URL?) -> Bool {
+    guard let bundleURL else { return false }
+    let frameworks = bundleURL.appendingPathComponent("Contents/Frameworks")
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: frameworks.path)) ?? []
+    return names.contains { name in
+        let lowered = name.lowercased()
+        return lowered.contains("chrom") || lowered.contains("electron") || lowered.contains("cef") || lowered.contains("webkit")
+    }
+}
+
+func dragDeliveryPath(method: DragDeliveryMethod, isWebContent: Bool, environment: [String: String]) -> DragDeliveryPath {
+    switch method {
+    case .global:
+        return .global
+    case .appPost:
+        return .appPost
+    case .auto:
+        // A web drag has no path through postToPid at all, so the gate that keeps
+        // native drags quiet must not apply here: the drag was requested explicitly.
+        if isWebContent { return .global }
+        return globalPointerFallbacksEnabled(environment: environment) ? .global : .appPost
+    }
+}
+
+/// The pre-`method` behaviour, kept for callers that never target a web page.
+func dragDeliveryPath(environment: [String: String]) -> DragDeliveryPath {
+    dragDeliveryPath(method: .auto, isWebContent: false, environment: environment)
+}
+
+func dragDeliveryNote(for path: DragDeliveryPath, method: DragDeliveryMethod = .auto) -> String {
     switch path {
     case .appPost:
         return "Drag delivered via app_post: mouse events were posted directly to the target process and the system pointer did not move. This path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. If the drag had no effect, set OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment to use the global pointer path, which may move the real pointer and change foreground focus."
     case .global:
-        return "Drag delivered via global pointer path: OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS is enabled, so the real pointer may have moved and foreground focus may have changed."
+        let reason = method == .auto
+            ? "the target runs a web engine, whose drag-and-drop only sees window-server sessions"
+            : "the caller asked for the global pointer path"
+        return "Drag delivered via global pointer path: \(reason), so the real pointer may have moved and foreground focus may have changed."
     }
 }
 
 /// Inserts the delivery note after the snapshot text and before any screenshot,
 /// so `primaryText` remains the snapshot for existing consumers.
-func appendingDragDeliveryNote(to result: ToolCallResult, path: DragDeliveryPath) -> ToolCallResult {
+func appendingDragDeliveryNote(to result: ToolCallResult, path: DragDeliveryPath, method: DragDeliveryMethod = .auto) -> ToolCallResult {
     var content = result.content
     let insertIndex = content.firstIndex { $0.dictionary["type"] as? String == "image" } ?? content.endIndex
-    content.insert(.text(dragDeliveryNote(for: path)), at: insertIndex)
+    content.insert(.text(dragDeliveryNote(for: path, method: method)), at: insertIndex)
     return ToolCallResult(content: content, isError: result.isError)
 }
 
@@ -1025,7 +1063,7 @@ public final class ComputerUseService {
         return try actionResult(for: query)
     }
 
-    public func drag(app query: String, fromX: Double, fromY: Double, toX: Double, toY: Double) throws -> ToolCallResult {
+    public func drag(app query: String, fromX: Double, fromY: Double, toX: Double, toY: Double, method: DragDeliveryMethod = .auto) throws -> ToolCallResult {
         let snapshot = try currentSnapshot(for: query)
         guard snapshot.observation.includeScreenshot else {
             throw ComputerUseError.stateUnavailable(SnapshotObservationOptions.screenshotOmittedNote + "; request a screenshot before screenshot-coordinate actions")
@@ -1042,11 +1080,13 @@ public final class ComputerUseService {
             from: start,
             to: end,
             targetDescription: "from=(\(Int(fromX)), \(Int(fromY))) to=(\(Int(toX)), \(Int(toY)))",
+            method: method,
             snapshot: snapshot
         )
         return appendingDragDeliveryNote(
             to: try actionResult(for: query),
-            path: path
+            path: path,
+            method: method
         )
     }
 
@@ -2510,11 +2550,17 @@ public final class ComputerUseService {
         from start: CGPoint,
         to end: CGPoint,
         targetDescription: String,
+        method: DragDeliveryMethod,
         snapshot: AppSnapshot
     ) throws -> DragDeliveryPath {
         let eventStart = inputEventPoint(fromScreenStatePoint: start)
         let eventEnd = inputEventPoint(fromScreenStatePoint: end)
-        let path = dragDeliveryPath(environment: ProcessInfo.processInfo.environment)
+        let isWebContent = appRunsWebDragAndDrop(bundleURL: snapshot.app.runningApplication.bundleURL)
+        let path = dragDeliveryPath(
+            method: method,
+            isWebContent: isWebContent,
+            environment: ProcessInfo.processInfo.environment
+        )
 
         switch path {
         case .global:
