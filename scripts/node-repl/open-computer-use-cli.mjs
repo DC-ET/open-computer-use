@@ -127,6 +127,7 @@ Commands:
   capabilities         Report Node, adapter, native, js, and repl availability.
   doctor               Print permission status and launch onboarding if needed on macOS.
   locked-use           macOS status, settings, enable, disable, or recovery.
+  app                  macOS app lifecycle: status, activate, launch, quit.
   list-apps            Print running or recently used apps.
   snapshot <app>       Print the current accessibility snapshot for an app.
   call <tool>          Call one tool, or run a JSON array of tool calls.
@@ -184,6 +185,23 @@ function capabilitiesHelp() {
   ocu capabilities [--json]
 
 Reports whether the current package has a usable Node runtime, REPL adapter, JavaScript kernel, and native runtime. Commands remain visible in help even when a component is unavailable.`;
+}
+
+function appHelp() {
+  return `Usage:
+  ocu app status <bundle-id> [--json]
+  ocu app activate <bundle-id> [--json]
+  ocu app launch <bundle-id> [--timeout <seconds>] [--json]
+  ocu app quit <bundle-id> [--timeout <seconds>] [--json]
+
+macOS only. Uses LaunchServices and AppleScript:
+  status    report whether the app is running and its pid.
+  activate  bring a running app to the front.
+  launch    open the app and wait for it to appear.
+  quit      request a graceful quit and wait for the process to exit.
+
+quit does not click through unsaved-changes dialogs. If the app is still running
+after the timeout, it reports the remaining pid and exits non-zero.`;
 }
 
 function installHelp(scriptName, usage) {
@@ -433,6 +451,139 @@ function runChild(executable, executableArgs, { env, spawnFn = spawn }) {
   });
 }
 
+const APP_ACTIONS = new Set(["status", "activate", "launch", "quit"]);
+
+export function parseAppArgs(argv) {
+  const action = argv[0];
+  if (!APP_ACTIONS.has(action)) {
+    throw new Error(`app expects one of: ${[...APP_ACTIONS].join(", ")}`);
+  }
+  const options = { action, bundleId: undefined, timeoutMs: 10_000, json: false, help: false };
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--timeout") {
+      const raw = argv[index + 1];
+      const seconds = Number(raw);
+      if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`--timeout expects a positive number of seconds, received: ${raw ?? "<missing>"}`);
+      options.timeoutMs = Math.min(seconds, 300) * 1000;
+      index += 1;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "-h" || arg === "--help") {
+      options.help = true;
+    } else if (arg.startsWith("-") && arg !== "-") {
+      throw new Error(`Unknown app option: ${arg}`);
+    } else if (options.bundleId) {
+      throw new Error("app accepts exactly one bundle identifier");
+    } else {
+      options.bundleId = arg;
+    }
+  }
+  if (!options.help) {
+    if (!options.bundleId) throw new Error("app requires a bundle identifier");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(options.bundleId)) {
+      throw new Error(`Invalid bundle identifier: ${options.bundleId}`);
+    }
+  }
+  return options;
+}
+
+export function parseLSAppInfoPID(output) {
+  const match = /"pid"\s*=\s*(\d+)/.exec(output ?? "");
+  return match ? Number(match[1]) : undefined;
+}
+
+function runCapture(command, args, { env, spawnFn }) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawnFn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: false, env });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", chunk => { stdout += chunk.toString(); });
+    child.stderr?.on("data", chunk => { stderr += chunk.toString(); });
+    child.on("error", reject);
+    child.on("close", code => resolve({ code: code ?? 0, stdout, stderr }));
+  });
+}
+
+async function appPID(bundleId, { env, spawnFn }) {
+  const result = await runCapture("lsappinfo", ["info", "-only", "pid", "-app", bundleId], { env, spawnFn });
+  if (result.code !== 0) return undefined;
+  return parseLSAppInfoPID(result.stdout);
+}
+
+async function waitForAppPID(bundleId, { expectRunning, timeoutMs, env, spawnFn }) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const pid = await appPID(bundleId, { env, spawnFn });
+    if (expectRunning ? pid !== undefined : pid === undefined) return pid;
+    if (Date.now() >= deadline) return pid;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+
+async function runAppCommand(options, { env, spawnFn, output }) {
+  const bundleId = options.bundleId;
+  const writeResult = (payload, text) => writeLine(output, options.json ? JSON.stringify(payload) : text);
+
+  if (options.action === "status") {
+    const pid = await appPID(bundleId, { env, spawnFn });
+    writeResult(
+      { bundleId, action: "status", running: pid !== undefined, ...(pid !== undefined ? { pid } : {}) },
+      pid !== undefined ? `${bundleId} is running (pid ${pid})` : `${bundleId} is not running`
+    );
+    return 0;
+  }
+
+  if (options.action === "activate") {
+    const pid = await appPID(bundleId, { env, spawnFn });
+    if (pid === undefined) throw new Error(`${bundleId} is not running; use 'ocu app launch ${bundleId}'`);
+    const result = await runCapture("osascript", [
+      "-e", "on run argv",
+      "-e", "tell application id (item 1 of argv) to activate",
+      "-e", "end run",
+      bundleId,
+    ], { env, spawnFn });
+    if (result.code !== 0) throw new Error(result.stderr.trim() || `Failed to activate ${bundleId}`);
+    writeResult({ bundleId, action: "activate", running: true, pid }, `activated ${bundleId} (pid ${pid})`);
+    return 0;
+  }
+
+  if (options.action === "launch") {
+    const result = await runCapture("open", ["-b", bundleId], { env, spawnFn });
+    if (result.code !== 0) throw new Error(result.stderr.trim() || `Failed to launch ${bundleId}`);
+    const pid = await waitForAppPID(bundleId, { expectRunning: true, timeoutMs: options.timeoutMs, env, spawnFn });
+    if (pid === undefined) throw new Error(`${bundleId} did not appear within ${options.timeoutMs / 1000}s`);
+    writeResult({ bundleId, action: "launch", running: true, pid }, `launched ${bundleId} (pid ${pid})`);
+    return 0;
+  }
+
+  const originalPID = await appPID(bundleId, { env, spawnFn });
+  if (originalPID === undefined) {
+    writeResult({ bundleId, action: "quit", running: false }, `${bundleId} is not running`);
+    return 0;
+  }
+  const result = await runCapture("osascript", [
+    "-e", "on run argv",
+    "-e", "tell application id (item 1 of argv) to quit",
+    "-e", "end run",
+    bundleId,
+  ], { env, spawnFn });
+  if (result.code !== 0) throw new Error(result.stderr.trim() || `Failed to quit ${bundleId}`);
+  const remainingPID = await waitForAppPID(bundleId, { expectRunning: false, timeoutMs: options.timeoutMs, env, spawnFn });
+  if (remainingPID !== undefined) {
+    writeLine(output, `quit requested but ${bundleId} is still running (pid ${remainingPID}); check for an unsaved-changes dialog`);
+    return 1;
+  }
+  writeResult({ bundleId, action: "quit", running: false }, `quit ${bundleId}`);
+  return 0;
+}
+
 function resolveNativeExecutable(report) {
   const native = report.runtime.native;
   if (!native.supported) throw new Error(`Unsupported platform ${native.platform}.`);
@@ -498,6 +649,19 @@ export async function main({
     if (command === "help" && argv[1] === "config") {
       writeLine(output, configHelp);
       return 0;
+    }
+    if (command === "help" && argv[1] === "app") {
+      writeLine(output, appHelp());
+      return 0;
+    }
+    if (command === "app") {
+      const options = parseAppArgs(argv.slice(1));
+      if (options.help) {
+        writeLine(output, appHelp());
+        return 0;
+      }
+      if (platform !== "darwin") throw new Error("app commands currently require macOS");
+      return await runAppCommand(options, { env, spawnFn, output });
     }
     if (command === "capabilities") {
       const extra = argv.slice(1);
