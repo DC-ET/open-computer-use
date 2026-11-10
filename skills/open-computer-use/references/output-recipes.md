@@ -96,6 +96,11 @@ ocu call --calls '[
 ]' --no-screenshot
 ```
 
+Indexes are numbered per snapshot, and every action returns a fresh one. An index
+read before a `click`/`set_value` can point at a different control after that
+action completes, even when the tree looks unchanged. Re-read the state before
+each step, or use a selector, which is resolved at the moment it is used.
+
 ## Selectors instead of indexes
 
 When the target is identifiable by text or role, `click` / `set_value` / `scroll`

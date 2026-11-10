@@ -26,27 +26,60 @@ final class SetValueReadBackTests: XCTestCase {
     }
     func testDelayedReadRetriesWithoutRewriting() throws {
         var time = 0.0, reads = 0, validations = 0
-        try verifySetValueReadBack(requested: "new", elementIndex: "1", read: {
+        let outcome = try verifySetValueReadBack(requested: "new", read: {
             reads += 1
-            return (time < 0.15 ? "old" : "new") as CFString
+            return .value((time < 0.15 ? "old" : "new") as CFString)
         }, validate: { validations += 1 }, now: { time }, sleep: { time += $0 })
+        XCTAssertEqual(outcome, .verified)
         XCTAssertGreaterThan(reads, 1)
-        XCTAssertEqual(validations, reads * 2)
+        // One validation opens each poll; a match adds the one that guards the return.
+        XCTAssertEqual(validations, reads + 1)
         XCTAssertLessThanOrEqual(time, 0.6)
     }
-    func testIgnoredUnreadableAndNormalizedWritesCannotReportSuccess() {
-        for actual: CFTypeRef? in ["old" as CFString, nil, "NEW" as CFString] {
+    func testADifferentReadableValueIsMismatched() throws {
+        for (actual, described) in [("old" as CFString, "\"old\""), ("NEW" as CFString, "\"NEW\"")] {
             var time = 0.0
-            XCTAssertThrowsError(try verifySetValueReadBack(requested: "new", elementIndex: "42", read: { actual }, validate: {}, now: { time }, sleep: { time += $0 })) {
-                XCTAssertTrue(String(describing: $0).contains("could not verify"))
-            }
+            let outcome = try verifySetValueReadBack(requested: "new", read: { .value(actual) }, validate: {}, now: { time }, sleep: { time += $0 })
+            XCTAssertEqual(outcome, .mismatched(actual: described))
             XCTAssertEqual(time, 0.6, accuracy: 0.00001)
         }
     }
+    func testAnEmptyRequestMatchesAControlThatReportsOnlyWhitespace() {
+        XCTAssertTrue(setValueDescribesEmptyText(requested: "", actual: "\n" as CFString))
+        XCTAssertTrue(setValueDescribesEmptyText(requested: "  ", actual: "\n\n" as CFString))
+        XCTAssertFalse(setValueDescribesEmptyText(requested: "a", actual: "\n" as CFString))
+        XCTAssertFalse(setValueDescribesEmptyText(requested: "", actual: " x" as CFString))
+        XCTAssertFalse(setValueDescribesEmptyText(requested: "", actual: nil))
+        XCTAssertFalse(setValueDescribesEmptyText(requested: "", actual: NSNumber(value: 0)))
+    }
+    func testClearingAnElectronEditorVerifies() throws {
+        var time = 0.0
+        let outcome = try verifySetValueReadBack(requested: "", read: { .value("\n" as CFString) }, validate: {}, now: { time }, sleep: { time += $0 })
+        XCTAssertEqual(outcome, .verified)
+        XCTAssertEqual(time, 0)
+    }
+    func testAnUnreadableControlIsNeitherConfirmedNorDenied() throws {
+        for answer: SetValueReadBack in [.unsupported, .temporarilyUnavailable] {
+            var time = 0.0
+            let outcome = try verifySetValueReadBack(requested: "new", read: { answer }, validate: {}, now: { time }, sleep: { time += $0 })
+            XCTAssertEqual(outcome, .unreadable)
+        }
+    }
+    func testAnUnsupportedAttributeIsNotPolledUntilTheDeadline() throws {
+        var time = 0.0
+        let outcome = try verifySetValueReadBack(requested: "new", read: { .unsupported }, validate: {}, now: { time }, sleep: { time += $0 })
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(time, 0)
+    }
     func testSessionRevocationAfterReadCannotReturnSuccess() {
         var read = false
-        XCTAssertThrowsError(try verifySetValueReadBack(requested: "new", elementIndex: "1", read: { read = true; return "new" as CFString }, validate: {
+        XCTAssertThrowsError(try verifySetValueReadBack(requested: "new", read: { read = true; return .value("new" as CFString) }, validate: {
             if read { throw ComputerUseError.message("revoked") }
         }))
+    }
+    func testANoteLeadsTheSnapshotText() {
+        let result = ToolCallResult.text("tree").prependingText("note")
+        XCTAssertEqual(result.textContent, "note\ntree")
+        XCTAssertFalse(result.isError)
     }
 }

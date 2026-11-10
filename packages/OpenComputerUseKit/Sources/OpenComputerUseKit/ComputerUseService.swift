@@ -366,6 +366,17 @@ func typedTextReplacement(value: String, selection: CFRange, text: String) -> (v
 
 let nonSettableSetValueErrorMessage = "Cannot set a value for an element that is not settable"
 
+/// Element indexes are numbered per snapshot, so an index kept from an earlier
+/// state can point at a different control. Name both ways out instead of leaving
+/// the caller to guess why a familiar index suddenly behaves differently.
+func staleElementIndexHint(_ index: String) -> String {
+    " If element_index '\(index)' came from an earlier state, it now points at a different control: run get_app_state again, or target the control with text/role."
+}
+
+func unknownElementIndexMessage(_ index: String) -> String {
+    "unknown element_index '\(index)'. Element indexes are numbered per snapshot; run get_app_state again, or target the control with text/role."
+}
+
 func setValueAttributeIsSettable(result: AXError, settable: Bool, attribute: String) throws -> Bool {
     guard result == .success else {
         throw ComputerUseError.message("AXUIElementIsAttributeSettable(\(attribute)) failed with \(result.rawValue)")
@@ -688,13 +699,17 @@ public final class ComputerUseService {
     }
 
     /// The result an action returns: the after-action snapshot, or a short status
-    /// when read-back is off.
-    private func actionResult(for query: String, recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation) throws -> ToolCallResult {
-        guard actionReadBack else {
-            return .text("ok")
+    /// when read-back is off. `note` leads the text so an agent reads it first.
+    private func actionResult(for query: String, recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation, note: String? = nil) throws -> ToolCallResult {
+        let result: ToolCallResult
+        if actionReadBack {
+            result = snapshotResult(for: try refreshSnapshot(for: query, recoveryPolicy: recoveryPolicy), style: .actionResult)
+        } else {
+            result = .text("ok")
         }
 
-        return snapshotResult(for: try refreshSnapshot(for: query, recoveryPolicy: recoveryPolicy), style: .actionResult)
+        guard let note else { return result }
+        return result.prependingText(note)
     }
 
     public func listApps() -> ToolCallResult {
@@ -1158,11 +1173,12 @@ public final class ComputerUseService {
         }
 
         guard try isSettableForSetValue(element: element, attribute: kAXValueAttribute) else {
-            throw ComputerUseError.message(nonSettableSetValueErrorMessage)
+            throw ComputerUseError.message(nonSettableSetValueErrorMessage + staleElementIndexHint(elementIndex))
         }
 
         let cursorTarget = visualCursorTarget(for: record, snapshot: snapshot)
         moveVisualCursor(to: cursorTarget)
+        var verificationNote: String?
 
         do {
             try requireUsableComputerUseSession()
@@ -1175,11 +1191,31 @@ public final class ComputerUseService {
             // A password field's value is never read back: AppKit answers "" whatever it holds, so the check failed a
             // write that had worked and invited sending it again.
             if !isSecureTextField(subrole: stringValue(of: element, attribute: kAXSubroleAttribute)) {
-                try verifySetValueReadBack(requested: value, elementIndex: elementIndex, read: {
+                let verification = try verifySetValueReadBack(requested: value, read: {
                     // Direct AX reads: never verify against a cached snapshot value.
                     var actual: CFTypeRef?
-                    return AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &actual) == .success ? actual : nil
+                    switch AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &actual) {
+                    case .success:
+                        guard let actual else { return .unsupported }
+                        return .value(actual)
+                    case .attributeUnsupported, .noValue:
+                        return .unsupported
+                    default:
+                        return .temporarilyUnavailable
+                    }
                 }, validate: { try requireUsableComputerUseSession() })
+
+                switch verification {
+                case .verified:
+                    break
+                case .mismatched(let actual):
+                    let detail = actual.map { " The control reports \($0)." } ?? ""
+                    throw ComputerUseError.message("set_value could not verify the requested value for element \(elementIndex).\(detail) Read the current value before retrying; the write may have changed the control.")
+                case .unreadable:
+                    // Web and Electron editors accept the write but expose no AXValue. Reporting a failure here
+                    // invited agents to write a second time, so state what is known and what is not.
+                    verificationNote = "set_value wrote to element \(elementIndex), but the control exposes no readable AXValue, so the write could not be verified. Read the app state before retrying; a repeat could write twice."
+                }
             }
         } catch {
             settleVisualCursor(at: cursorTarget)
@@ -1187,7 +1223,7 @@ public final class ComputerUseService {
         }
 
         settleVisualCursor(at: cursorTarget)
-        return try actionResult(for: query)
+        return try actionResult(for: query, note: verificationNote)
     }
 
     public func selectText(
@@ -1430,7 +1466,7 @@ public final class ComputerUseService {
 
     private func lookupElement(snapshot: AppSnapshot, index: String) throws -> ElementRecord {
         guard let parsedIndex = Int(index), let record = snapshot.elements[parsedIndex] else {
-            throw ComputerUseError.invalidArguments("unknown element_index '\(index)'")
+            throw ComputerUseError.invalidArguments(unknownElementIndexMessage(index))
         }
 
         return try keptRecord(record, index: index, snapshot: snapshot)

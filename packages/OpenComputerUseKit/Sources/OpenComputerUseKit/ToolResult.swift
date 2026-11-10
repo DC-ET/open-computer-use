@@ -50,6 +50,12 @@ public struct ToolCallResult: @unchecked Sendable {
         }.joined(separator: "\n")
     }
 
+    /// Lead with `text` while keeping any snapshot and screenshot content intact.
+    /// Used for notes an agent must read before a long accessibility tree.
+    public func prependingText(_ text: String) -> ToolCallResult {
+        ToolCallResult(content: [.text(text)] + content, isError: isError)
+    }
+
     public var asDictionary: [String: Any] {
         [
             "content": content.map(\.dictionary),

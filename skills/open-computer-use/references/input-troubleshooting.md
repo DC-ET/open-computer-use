@@ -39,6 +39,14 @@ For a focused editable control:
 3. If auto still does nothing, retry with `keyMethod: "sky_key"` on macOS.
 4. Use `set_value` only for native controls that expose a settable `AXValue`.
    It intentionally does not fall back to keyboard or clipboard input.
+   It now reports three outcomes instead of two: a readable value that matches
+   verifies, a readable value that differs is an error naming what the control
+   reports, and a control with no readable value at all returns success with a
+   note. Treat that note as "unknown", not "done": read the state before
+   retrying, because a second write could apply twice.
+   Clearing a Chromium/Electron editor is the common case: the write works, but
+   an empty contenteditable answers `"\n"` rather than `""`, so an empty request
+   counts as verified when the control reports only whitespace.
 5. Last resort: paste. Back up the entire clipboard first and restore it
    afterwards (see below).
 
@@ -74,13 +82,20 @@ await app.pressKey("cmd+v", { keyMethod: "sky_key" });
 '
 ```
 
+A `cmd+v` chord can still do nothing in Electron: the event reaches the app but
+the composer never reads the pasteboard. Do not retry it in a loop. If the field
+is unchanged, go back to `type_text`, which writes the AX value and verifies it.
+
 ## 4. Clipboard safety
 
-`printf '你好' | pbcopy` can be decoded as MacRoman by Electron apps, producing
-`‰Ω†Â•Ω`. Prefer:
+Passing non-ASCII text as a shell argument can reach the pasteboard already
+mangled: `printf '你好' | pbcopy` can be decoded as MacRoman by Electron apps,
+and `osascript -e 'set the clipboard to "你好"'` can turn every character into
+`?`. Write the text to a UTF-8 file first, confirm it, then read the file:
 
 ```sh
-osascript -e 'set the clipboard to "你好"'
+pbcopy < /tmp/clip.txt
+pbpaste | head -c 40
 ```
 
 The CLI does not currently provide a built-in paste tool. Before overwriting the
