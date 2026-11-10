@@ -104,6 +104,14 @@ final class TargetedQuerySafetyTests: XCTestCase {
         XCTAssertFalse(targetedRecordMatches(criteria, role: "AXButton", title: String(repeating: "x", count: 1001), description: nil, value: nil))
     }
 
+    func testRoleOnlyMatchAcceptsAXPrefixForAncestorPromotion() {
+        let criteria = TargetedAX.Criteria(text: nil, exact: false, role: "AXRow", limit: 20, maxNodes: 500)
+        XCTAssertTrue(targetedRecordMatches(criteria, role: "row", title: nil, description: nil, value: nil))
+        XCTAssertTrue(targetedRecordMatches(criteria, role: "AXRow", title: nil, description: nil, value: nil))
+        XCTAssertFalse(targetedRecordMatches(criteria, role: "AXButton", title: nil, description: nil, value: nil))
+        XCTAssertFalse(targetedRecordMatches(criteria, role: nil, title: nil, description: nil, value: nil))
+    }
+
     func testTraversalReportsTimeoutAndAXErrors() throws {
         let timedOut = try boundedTargetedWalk(root: 0, maxNodes: 10, limit: 10, expired: { true }, inspect: { _ in XCTFail("should not inspect"); return (false, true) }, children: { _, _ in ([], false) })
         XCTAssertEqual(timedOut.visitedNodes, 0)

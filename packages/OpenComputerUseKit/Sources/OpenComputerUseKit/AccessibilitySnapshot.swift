@@ -2540,7 +2540,74 @@ extension SnapshotBuilder {
     ]
 
     /// Use one bounded traversal so every app has the same visibility and match rules.
+    /// When a role + text query has no direct match, retry text-only and promote a
+    /// matching descendant's nearest ancestor with the requested role. This is the
+    /// common case for rows/buttons whose label lives on a child AXStaticText.
     static func targetedSearch(_ criteria: TargetedAX.Criteria, in context: TargetedAX.WindowContext) throws -> TargetedAX.SearchResult {
+        let direct = try targetedSearchDirect(criteria, in: context)
+        guard direct.records.isEmpty,
+              criteria.role?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+              criteria.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return direct
+        }
+        return try targetedSearchPromotingAncestorRole(criteria, in: context, fallback: direct)
+    }
+
+    private static func targetedSearchPromotingAncestorRole(
+        _ criteria: TargetedAX.Criteria,
+        in context: TargetedAX.WindowContext,
+        fallback: TargetedAX.SearchResult
+    ) throws -> TargetedAX.SearchResult {
+        var textCriteria = criteria
+        textCriteria.role = nil
+        let textResult = try targetedSearchDirect(textCriteria, in: context)
+        guard !textResult.records.isEmpty else { return textResult }
+
+        var promoted: [ElementRecord] = []
+        var seen = Set<AXSearchNode>()
+        for record in textResult.records {
+            guard let element = record.element else { continue }
+            var current = element
+            for _ in 0..<64 {
+                guard let parent = copyElement(current, attribute: kAXParentAttribute),
+                      !CFEqual(parent, current) else {
+                    break
+                }
+                AXUIElementSetMessagingTimeout(parent, 0.05)
+                let scan = batchScan(parent)
+                let visible = scan.globalFrame.map { frame in
+                    !frame.isEmpty && (context.windowBounds.map { frame.intersects($0) } ?? true)
+                } ?? true
+                if visible,
+                   targetedRecordMatches(
+                    TargetedAX.Criteria(text: nil, exact: criteria.exact, role: criteria.role,
+                                        limit: criteria.limit, maxNodes: criteria.maxNodes),
+                    role: scan.role,
+                    title: scan.title,
+                    description: scan.description,
+                    value: scan.value
+                ) {
+                    let node = AXSearchNode(element: parent)
+                    if seen.insert(node).inserted {
+                        promoted.append(makeRecord(parent, scan: scan, windowBounds: context.windowBounds))
+                    }
+                    break
+                }
+                current = parent
+            }
+            if promoted.count >= criteria.limit { break }
+        }
+
+        let reason = textResult.stopReason ?? (promoted.count >= criteria.limit ? "limit" : nil)
+        return .init(
+            records: promoted,
+            truncated: reason != nil,
+            stopReason: reason,
+            visitedNodes: fallback.visitedNodes + textResult.visitedNodes
+        )
+    }
+
+    private static func targetedSearchDirect(_ criteria: TargetedAX.Criteria, in context: TargetedAX.WindowContext) throws -> TargetedAX.SearchResult {
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         let expired = { ProcessInfo.processInfo.systemUptime >= deadline }
         var scans: [AXSearchNode: NodeScan] = [:]
