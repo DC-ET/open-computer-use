@@ -64,12 +64,12 @@ final class OpenComputerUseKitTests: XCTestCase {
     func testCLIRecognizesSingleToolCallCommand() throws {
         XCTAssertEqual(
             try parseOpenComputerUseCLI(arguments: ["call", "list_apps"]),
-            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil))
+            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil, noScreenshot: false))
         )
 
         XCTAssertEqual(
             try parseOpenComputerUseCLI(arguments: ["call", "get_app_state", "--args", #"{"app":"TextEdit"}"#]),
-            .call(.single(toolName: "get_app_state", argumentsJSON: #"{"app":"TextEdit"}"#, argumentsFile: nil))
+            .call(.single(toolName: "get_app_state", argumentsJSON: #"{"app":"TextEdit"}"#, argumentsFile: nil, noScreenshot: false))
         )
     }
 
@@ -81,7 +81,8 @@ final class OpenComputerUseKitTests: XCTestCase {
             .call(.sequence(
                 callsJSON: calls,
                 callsFile: nil,
-                interCallDelay: openComputerUseDefaultInterCallDelay
+                interCallDelay: openComputerUseDefaultInterCallDelay,
+                noScreenshot: false
             ))
         )
     }
@@ -91,7 +92,42 @@ final class OpenComputerUseKitTests: XCTestCase {
 
         XCTAssertEqual(
             try parseOpenComputerUseCLI(arguments: ["call", "--calls", calls, "--sleep", "0.5"]),
-            .call(.sequence(callsJSON: calls, callsFile: nil, interCallDelay: 0.5))
+            .call(.sequence(callsJSON: calls, callsFile: nil, interCallDelay: 0.5, noScreenshot: false))
+        )
+    }
+
+    func testCLIRecognizesNoScreenshotForSingleAndSequenceCalls() throws {
+        XCTAssertEqual(
+            try parseOpenComputerUseCLI(arguments: ["call", "get_app_state", "--no-screenshot"]),
+            .call(.single(toolName: "get_app_state", argumentsJSON: nil, argumentsFile: nil, noScreenshot: true))
+        )
+
+        let calls = #"[{"tool":"get_app_state","args":{"app":"TextEdit"}}]"#
+        XCTAssertEqual(
+            try parseOpenComputerUseCLI(arguments: ["call", "--calls", calls, "--no-screenshot"]),
+            .call(.sequence(
+                callsJSON: calls,
+                callsFile: nil,
+                interCallDelay: openComputerUseDefaultInterCallDelay,
+                noScreenshot: true
+            ))
+        )
+    }
+
+    func testNoScreenshotOnlyAugmentsGetAppStateWithoutExplicitChoice() {
+        XCTAssertEqual(
+            applyingNoScreenshot(true, tool: "get_app_state", arguments: ["app": "TextEdit"])["include_screenshot"] as? Bool,
+            false
+        )
+        XCTAssertNil(
+            applyingNoScreenshot(true, tool: "list_apps", arguments: [:])["include_screenshot"]
+        )
+        XCTAssertEqual(
+            applyingNoScreenshot(true, tool: "get_app_state", arguments: ["app": "TextEdit", "include_screenshot": true])["include_screenshot"] as? Bool,
+            true
+        )
+        XCTAssertNil(
+            applyingNoScreenshot(false, tool: "get_app_state", arguments: ["app": "TextEdit"])["include_screenshot"]
         )
     }
 
@@ -368,7 +404,8 @@ final class OpenComputerUseKitTests: XCTestCase {
             .sequence(
                 callsJSON: #"[{"tool":"not_a_tool"},{"tool":"list_apps"}]"#,
                 callsFile: nil,
-                interCallDelay: openComputerUseDefaultInterCallDelay
+                interCallDelay: openComputerUseDefaultInterCallDelay,
+                noScreenshot: false
             )
         )
 
@@ -384,7 +421,8 @@ final class OpenComputerUseKitTests: XCTestCase {
             .sequence(
                 callsJSON: #"[{"tool":"list_apps"},{"tool":"list_apps"},{"tool":"list_apps"}]"#,
                 callsFile: nil,
-                interCallDelay: openComputerUseDefaultInterCallDelay
+                interCallDelay: openComputerUseDefaultInterCallDelay,
+                noScreenshot: false
             ),
             sleepHandler: { recordedSleeps.append($0) }
         )
@@ -401,7 +439,7 @@ final class OpenComputerUseKitTests: XCTestCase {
             .doctor(),
             .listApps,
             .snapshot(app: "TextEdit"),
-            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil)),
+            .call(.single(toolName: "list_apps", argumentsJSON: nil, argumentsFile: nil, noScreenshot: false)),
         ] {
             XCTAssertTrue(shouldUseMacOSAppAgentProxy(
                 command: command,
@@ -443,7 +481,7 @@ final class OpenComputerUseKitTests: XCTestCase {
             currentDirectory: directory.path
         )
         XCTAssertEqual(arguments, ["call", "--calls-file", directory.appendingPathComponent("calls.json").path, "--sleep", "0"])
-        guard case let .call(.sequence(_, callsFile, _)) = try parseOpenComputerUseCLI(arguments: arguments) else {
+        guard case let .call(.sequence(_, callsFile, _, _)) = try parseOpenComputerUseCLI(arguments: arguments) else {
             return XCTFail("expected a call sequence")
         }
         XCTAssertEqual(try readOpenComputerUseCallSequence(json: nil, file: callsFile).map(\.tool), ["list_apps"])
@@ -1142,6 +1180,45 @@ final class OpenComputerUseKitTests: XCTestCase {
                 isValueSettable: true
             )
         )
+    }
+
+    func testAXSelectedTextWriteFallsBackOnlyWhenWebValueStaysUnchanged() {
+        XCTAssertTrue(
+            shouldFallbackAfterAXSelectedTextWrite(
+                isWebTextControl: true,
+                beforeValue: "\n",
+                afterValue: "\n"
+            )
+        )
+        XCTAssertFalse(
+            shouldFallbackAfterAXSelectedTextWrite(
+                isWebTextControl: true,
+                beforeValue: "\n",
+                afterValue: "你好"
+            )
+        )
+        XCTAssertFalse(
+            shouldFallbackAfterAXSelectedTextWrite(
+                isWebTextControl: false,
+                beforeValue: "\n",
+                afterValue: "\n"
+            )
+        )
+        XCTAssertFalse(
+            shouldFallbackAfterAXSelectedTextWrite(
+                isWebTextControl: true,
+                beforeValue: nil,
+                afterValue: nil
+            )
+        )
+    }
+
+    func testKeyboardTextWriteVerificationOnlyForEmptyWebControls() {
+        XCTAssertTrue(shouldVerifyKeyboardTextWrite(isWebTextControl: true, value: "\n"))
+        XCTAssertTrue(shouldVerifyKeyboardTextWrite(isWebTextControl: true, value: "   "))
+        XCTAssertFalse(shouldVerifyKeyboardTextWrite(isWebTextControl: true, value: "existing"))
+        XCTAssertFalse(shouldVerifyKeyboardTextWrite(isWebTextControl: false, value: ""))
+        XCTAssertFalse(shouldVerifyKeyboardTextWrite(isWebTextControl: true, value: nil))
     }
 
     func testSnapshotRenderedTextStartsDirectlyWithAppHeader() {

@@ -347,6 +347,21 @@ public struct OpenComputerUseCallOutput {
 
 public typealias OpenComputerUseSleepHandler = (TimeInterval) -> Void
 
+/// `--no-screenshot` is a CLI convenience for the most common agent workflow.
+/// An explicit `include_screenshot` in the tool arguments always wins.
+func applyingNoScreenshot(
+    _ noScreenshot: Bool,
+    tool: String,
+    arguments: [String: Any]
+) -> [String: Any] {
+    guard noScreenshot, tool == "get_app_state", arguments["include_screenshot"] == nil else {
+        return arguments
+    }
+    var updated = arguments
+    updated["include_screenshot"] = false
+    return updated
+}
+
 public func runOpenComputerUseCall(
     _ invocation: OpenComputerUseCallInvocation,
     service: ComputerUseService = ComputerUseService(),
@@ -355,24 +370,30 @@ public func runOpenComputerUseCall(
     let dispatcher = ComputerUseToolDispatcher(service: service)
 
     switch invocation {
-    case let .single(toolName, argumentsJSON, argumentsFile):
+    case let .single(toolName, argumentsJSON, argumentsFile, noScreenshot):
         let arguments = try readOpenComputerUseToolArguments(
             json: argumentsJSON,
             file: argumentsFile
         )
-        let result = dispatcher.callToolAsResult(name: toolName, arguments: arguments)
+        let result = dispatcher.callToolAsResult(
+            name: toolName,
+            arguments: applyingNoScreenshot(noScreenshot, tool: toolName, arguments: arguments)
+        )
         return OpenComputerUseCallOutput(
             jsonObject: result.asDictionary,
             hasToolError: result.isError
         )
 
-    case let .sequence(callsJSON, callsFile, interCallDelay):
+    case let .sequence(callsJSON, callsFile, interCallDelay, noScreenshot):
         let calls = try readOpenComputerUseCallSequence(json: callsJSON, file: callsFile)
         var outputs: [[String: Any]] = []
         var hasToolError = false
 
         for (index, call) in calls.enumerated() {
-            let result = dispatcher.callToolAsResult(name: call.tool, arguments: call.arguments)
+            let result = dispatcher.callToolAsResult(
+                name: call.tool,
+                arguments: applyingNoScreenshot(noScreenshot, tool: call.tool, arguments: call.arguments)
+            )
             outputs.append([
                 "tool": call.tool,
                 "result": result.asDictionary,

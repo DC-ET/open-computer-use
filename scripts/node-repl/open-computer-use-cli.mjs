@@ -157,18 +157,18 @@ Notes:
 
 function jsHelp() {
   return `Usage:
-  ocu js [--timeout <ms>] [--json] '<code>'
-  ocu js [--timeout <ms>] [--json] -
-  ocu js [--timeout <ms>] [--json] --file <path>
+  ocu js [--timeout <ms>] [--json] [--quiet] '<code>'
+  ocu js [--timeout <ms>] [--json] [--quiet] -
+  ocu js [--timeout <ms>] [--json] [--quiet] --file <path>
 
-Runs one JavaScript evaluation with top-level await and the asynchronous cua API, then closes its Worker and native MCP child. Source passed as '-' is read from stdin. The timeout defaults to 30000 ms and is capped at 300000 ms.`;
+Runs one JavaScript evaluation with top-level await and the asynchronous cua API, then closes its Worker and native MCP child. Source passed as '-' is read from stdin. The timeout defaults to 30000 ms and is capped at 300000 ms. --quiet omits the one-time JavaScript API guidance from the result.`;
 }
 
 function replHelp() {
   return `Usage:
-  ocu repl [--timeout <ms>] [--json]
+  ocu repl [--timeout <ms>] [--json] [--quiet]
 
-Starts a JavaScript session whose top-level bindings and cua app bindings persist until exit.
+Starts a JavaScript session whose top-level bindings and cua app bindings persist until exit. --quiet omits the JavaScript API guidance and the startup banner.
 
 REPL commands:
   .help                Show this help.
@@ -204,7 +204,7 @@ function parseTimeout(value) {
 }
 
 export function parseJavaScriptArgs(argv, { replMode = false } = {}) {
-  const options = { timeoutMs: DEFAULT_TIMEOUT_MS, json: false, filePath: undefined, sourceParts: [] };
+  const options = { timeoutMs: DEFAULT_TIMEOUT_MS, json: false, quiet: false, filePath: undefined, sourceParts: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--timeout") {
@@ -217,6 +217,8 @@ export function parseJavaScriptArgs(argv, { replMode = false } = {}) {
       index += 1;
     } else if (arg === "--json") {
       options.json = true;
+    } else if (arg === "--quiet") {
+      options.quiet = true;
     } else if (arg === "-h" || arg === "--help") {
       options.help = true;
     } else if (arg === "--") {
@@ -314,12 +316,18 @@ function installSessionSignalHandlers(runtime, onSignal) {
   };
 }
 
-function printEvaluation(result, { json, output }) {
+function isJavaScriptGuidance(item) {
+  return item?.type === "text" && typeof item.text === "string"
+    && item.text.startsWith("## Open Computer Use JavaScript API");
+}
+
+function printEvaluation(result, { json, quiet = false, output }) {
+  const content = quiet ? (result.content ?? []).filter(item => !isJavaScriptGuidance(item)) : (result.content ?? []);
   if (json) {
-    writeLine(output, JSON.stringify(result));
+    writeLine(output, JSON.stringify(quiet ? { ...result, content } : result));
     return;
   }
-  for (const item of result.content ?? []) {
+  for (const item of content) {
     if (item.type === "text") writeLine(output, item.text);
     else if (item.type === "image") writeLine(output, `[image ${item.mimeType ?? "application/octet-stream"}, ${Buffer.byteLength(item.data ?? "", "base64")} bytes]`);
   }
@@ -336,7 +344,7 @@ async function runJavaScript({ options, paths, env, input, output }) {
   const removeSignalHandlers = installSessionSignalHandlers(runtime);
   try {
     const result = await runtime.session.run(source, options.timeoutMs);
-    printEvaluation(result, { json: options.json, output });
+    printEvaluation(result, { json: options.json, quiet: options.quiet, output });
     return result.isError ? 1 : 0;
   } finally {
     removeSignalHandlers();
@@ -350,7 +358,7 @@ async function runInteractiveRepl({ options, paths, env, input, output, errorOut
   const lines = readline.createInterface({ input, output: terminal ? output : undefined, terminal, prompt: "ocu> " });
   const removeSignalHandlers = installSessionSignalHandlers(runtime, () => lines.close());
   let editorLines;
-  if (terminal) {
+  if (terminal && !options.quiet) {
     writeLine(output, "Open Computer Use JavaScript REPL. Use nodeRepl.write(value) for output; type .help for commands.");
     lines.prompt();
   }
@@ -363,7 +371,7 @@ async function runInteractiveRepl({ options, paths, env, input, output, errorOut
           editorLines = undefined;
           if (block.trim()) {
             const result = await runtime.session.run(block, options.timeoutMs);
-            printEvaluation(result, { json: options.json, output });
+            printEvaluation(result, { json: options.json, quiet: options.quiet, output });
           }
           if (terminal) {
             lines.setPrompt("ocu> ");
@@ -389,10 +397,10 @@ async function runInteractiveRepl({ options, paths, env, input, output, errorOut
         }
       } else if (source === ".reset") {
         await runtime.session.reset();
-        printEvaluation({ content: [{ type: "text", text: "Open Computer Use JavaScript session reset" }], isError: false }, { json: options.json, output });
+        printEvaluation({ content: [{ type: "text", text: "Open Computer Use JavaScript session reset" }], isError: false }, { json: options.json, quiet: options.quiet, output });
       } else {
         const result = await runtime.session.run(line, options.timeoutMs);
-        printEvaluation(result, { json: options.json, output });
+        printEvaluation(result, { json: options.json, quiet: options.quiet, output });
       }
       if (terminal) lines.prompt();
     }

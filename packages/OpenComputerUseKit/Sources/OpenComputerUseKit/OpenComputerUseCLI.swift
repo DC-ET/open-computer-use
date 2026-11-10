@@ -15,8 +15,8 @@ public enum OpenComputerUseCLICommand: Equatable {
 }
 
 public enum OpenComputerUseCallInvocation: Equatable {
-    case single(toolName: String, argumentsJSON: String?, argumentsFile: String?)
-    case sequence(callsJSON: String?, callsFile: String?, interCallDelay: TimeInterval)
+    case single(toolName: String, argumentsJSON: String?, argumentsFile: String?, noScreenshot: Bool)
+    case sequence(callsJSON: String?, callsFile: String?, interCallDelay: TimeInterval, noScreenshot: Bool)
 }
 
 public let openComputerUseDefaultInterCallDelay: TimeInterval = 1
@@ -204,7 +204,7 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
     case "snapshot":
         return """
         Usage:
-          open-computer-use snapshot [--include-ax true|false] [--include-screenshot true|false] [--text-limit <positive-int|max>] [--max-tree-nodes <positive-int>] [--max-tree-depth <positive-int>] <app>
+          open-computer-use snapshot [--include-ax true|false] [--include-screenshot true|false] [--no-screenshot] [--text-limit <positive-int|max>] [--max-tree-nodes <positive-int>] [--max-tree-depth <positive-int>] <app>
 
         Arguments:
           <app>                App name or bundle identifier to inspect.
@@ -212,6 +212,7 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
         Options:
           --include-ax         Include AX/focus/selection (true by default). False invalidates prior indexes.
           --include-screenshot Include screenshot capture (true by default). At least one channel must be true.
+          --no-screenshot      Shorthand for --include-screenshot false; AX state only.
           --text-limit         Override the default 500 character text limit. Use `max` for full text.
           --max-tree-nodes     Override the default 1200 node accessibility tree budget.
           --max-tree-depth     Override the default 64 level accessibility tree depth.
@@ -221,21 +222,23 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
     case "call":
         return """
         Usage:
-          open-computer-use call <tool> [--args '<json-object>']
-          open-computer-use call <tool> [--args-file <path>]
-          open-computer-use call --calls '<json-array>' [--sleep <seconds>]
-          open-computer-use call --calls-file <path> [--sleep <seconds>]
+          open-computer-use call <tool> [--args '<json-object>'] [--no-screenshot]
+          open-computer-use call <tool> [--args-file <path>] [--no-screenshot]
+          open-computer-use call --calls '<json-array>' [--sleep <seconds>] [--no-screenshot]
+          open-computer-use call --calls-file <path> [--sleep <seconds>] [--no-screenshot]
 
         Examples:
           open-computer-use call list_apps
-          open-computer-use call get_app_state --args '{"app":"TextEdit"}'
-          open-computer-use call --calls '[{"tool":"get_app_state","args":{"app":"TextEdit"}},{"tool":"press_key","args":{"app":"TextEdit","key":"Return"}}]'
+          open-computer-use call get_app_state --args '{"app":"TextEdit"}' --no-screenshot
+          open-computer-use call --calls '[{"tool":"get_app_state","args":{"app":"TextEdit"}},{"tool":"press_key","args":{"app":"TextEdit","key":"Return"}}]' --no-screenshot
           open-computer-use call --calls-file examples/textedit-overlay-seq.json --sleep 0.5
 
         The JSON array form keeps all calls in one process so follow-up actions
         can reuse the app state and element indices captured by get_app_state.
         Sequence execution stops after the first tool result with isError=true.
         Sequence runs sleep \(formatOpenComputerUseDelay(openComputerUseDefaultInterCallDelay)) between successful operations by default.
+        --no-screenshot adds include_screenshot=false to get_app_state calls unless
+        the call already sets include_screenshot explicitly.
         """
     case "turn-ended":
         return """
@@ -349,6 +352,8 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
             }
             if argument == "--include-ax" { observation.includeAX = value }
             else { observation.includeScreenshot = value }
+        case "--no-screenshot":
+            observation.includeScreenshot = false
         case "--text-limit":
             index += 1
             guard index < arguments.count else {
@@ -430,6 +435,7 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
     var callsJSON: String?
     var callsFile: String?
     var interCallDelay = openComputerUseDefaultInterCallDelay
+    var noScreenshot = false
 
     var index = 0
     while index < arguments.count {
@@ -446,6 +452,8 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
             callsFile = try parseOptionValue("--calls-file", arguments: arguments, index: &index)
         case "--sleep":
             interCallDelay = try parseTimeIntervalOptionValue("--sleep", arguments: arguments, index: &index)
+        case "--no-screenshot":
+            noScreenshot = true
         case "-h", "--help":
             throw OpenComputerUseCLIError(message: "call help must be requested as `open-computer-use call --help`", helpCommand: "call")
         default:
@@ -479,7 +487,8 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
         return .call(.sequence(
             callsJSON: callsJSON,
             callsFile: callsFile,
-            interCallDelay: interCallDelay
+            interCallDelay: interCallDelay,
+            noScreenshot: noScreenshot
         ))
     }
 
@@ -498,7 +507,7 @@ private func parseCall(arguments: [String]) throws -> OpenComputerUseCLICommand 
         throw OpenComputerUseCLIError(message: "call requires a tool name or --calls/--calls-file", helpCommand: "call")
     }
 
-    return .call(.single(toolName: toolName, argumentsJSON: argumentsJSON, argumentsFile: argumentsFile))
+    return .call(.single(toolName: toolName, argumentsJSON: argumentsJSON, argumentsFile: argumentsFile, noScreenshot: noScreenshot))
 }
 
 private func parseOptionValue(
