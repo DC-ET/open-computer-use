@@ -79,7 +79,7 @@ JavaScript API 指引，不适合 Agent 消费。要求逐项优化、本地验�
 
 ## 验证
 
-- `swift test`：467 tests，13 skipped，0 failures。
+- `swift test`：471 tests，13 skipped，0 failures。
 - `node --test scripts/node-repl/*.test.mjs scripts/tests/*.test.mjs`：56 tests，
   0 failures。
 - `make check-docs` 通过，`npm run package:skill` 成功。
