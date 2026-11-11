@@ -255,6 +255,37 @@ final class AXSemanticRenderingTests: XCTestCase {
         XCTAssertTrue(output.lines.contains { $0.contains("tree truncated") })
     }
 
+    func testGenericGroupWithFewTextsIsSummarized() {
+        let fixture = Fixture()
+        let group = fixture.add(10, role: "AXGroup")
+        fixture.add(20, role: "AXStaticText", title: "Alpha")
+        fixture.add(21, role: "AXStaticText", title: "Beta")
+        group.children = [20, 21]
+        fixture.nodes[0]!.children = [10]
+        let output = fixture.render(limits: .init(maxNodeCount: 100, maxDepth: 64))
+        let alphaLines = output.lines.filter { $0.contains("Alpha") }
+        XCTAssertEqual(alphaLines.count, 1)
+        XCTAssertTrue(alphaLines[0].contains("Beta"))
+    }
+
+    func testGenericGroupBeyondMergeLimitIsNotSummarized() {
+        let fixture = Fixture()
+        let group = fixture.add(10, role: "AXGroup")
+        var children: [Int] = []
+        for id in 20..<40 {
+            fixture.add(id, role: "AXStaticText", title: "item \(id)")
+            children.append(id)
+        }
+        group.children = children
+        fixture.nodes[0]!.children = [10]
+        let output = fixture.render(limits: .init(maxNodeCount: 100, maxDepth: 64))
+        // 20 texts exceed the 8-text merge limit, so the traversal can stop early
+        // and every child still renders on its own line.
+        XCTAssertEqual(output.lines.filter { $0.contains("item 20") }.count, 1)
+        XCTAssertTrue(output.lines.contains { $0.contains("item 39") })
+        XCTAssertFalse(output.lines.contains { $0.contains("item 20") && $0.contains("item 21") })
+    }
+
     func testWalkBudgetLimitsAreCarriedThroughReplacing() {
         let limits = AccessibilityTreeLimits(maxNodeCount: 10, maxDepth: 5, maxWalkMilliseconds: 250)
         XCTAssertEqual(limits.replacing(maxNodeCount: 20).maxWalkMilliseconds, 250)

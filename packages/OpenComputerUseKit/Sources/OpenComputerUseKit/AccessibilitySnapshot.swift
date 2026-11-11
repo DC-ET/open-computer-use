@@ -1943,7 +1943,13 @@ private func summarizedGenericText(
         return nil
     }
 
-    let texts = descendantTextsForSummary(of: element, textLimit: textLimit)
+    // `shouldMergeTextOnlySiblings` already rejects more than 8 texts or 220
+    // characters, so stop walking descendants once either limit is exceeded.
+    // Large web trees otherwise read thousands of elements for a summary that
+    // can never be rendered.
+    let collector = SummaryTextCollector(maxTexts: 9, maxCharacters: 221)
+    collectDescendantTextsForSummary(of: element, textLimit: textLimit, into: collector)
+    let texts = collector.texts
     guard texts.count >= minimumTextCount else {
         return nil
     }
@@ -1955,6 +1961,67 @@ private func summarizedGenericText(
     let joined = sanitizeText(texts.joined(separator: " "), textLimit: textLimit)
         .replacingOccurrences(of: " : ", with: " :  ")
     return joined.isEmpty ? nil : joined
+}
+
+/// Accumulator with the same traversal order as `descendantTextsForSummary`,
+/// but it stops once the merge threshold can no longer be met.
+private final class SummaryTextCollector {
+    private(set) var texts: [String] = []
+    private(set) var characters = 0
+    private let maxTexts: Int
+    private let maxCharacters: Int
+
+    init(maxTexts: Int, maxCharacters: Int) {
+        self.maxTexts = maxTexts
+        self.maxCharacters = maxCharacters
+    }
+
+    var isFull: Bool { texts.count >= maxTexts || characters > maxCharacters }
+
+    func append(_ text: String) {
+        guard !isFull else { return }
+        texts.append(text)
+        characters += text.count
+    }
+}
+
+private func collectDescendantTextsForSummary(
+    of element: AXUIElement,
+    depth: Int = 0,
+    textLimit: SnapshotTextLimit = .defaults,
+    into collector: SummaryTextCollector
+) {
+    guard depth < 8, !collector.isFull else {
+        return
+    }
+
+    let role = stringValue(of: element, attribute: kAXRoleAttribute) ?? ""
+    if role == "AXLink", let linkText = summaryTextForLink(element, textLimit: textLimit) {
+        collector.append(linkText)
+        return
+    }
+
+    if role == kAXStaticTextRole as String || role == kAXTextFieldRole as String {
+        if let value = sanitizedValue(of: element, textLimit: textLimit), !value.isEmpty {
+            collector.append(value)
+            return
+        }
+
+        if let title = stringValue(of: element, attribute: kAXTitleAttribute) {
+            let sanitized = sanitizeText(title, textLimit: textLimit)
+            if !sanitized.isEmpty {
+                collector.append(sanitized)
+            }
+            return
+        }
+    }
+
+    for child in copyArray(element, attribute: kAXChildrenAttribute) ?? [] {
+        collectDescendantTextsForSummary(of: child, depth: depth + 1, textLimit: textLimit, into: collector)
+        if collector.isFull {
+            return
+        }
+    }
 }
 
 private func summaryImageDescendants(of element: AXUIElement, depth: Int = 0) -> [AXUIElement] {

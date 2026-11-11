@@ -103,6 +103,26 @@ AXUIElementCopyMultipleAttributeValues  2789 samples（同样阻塞在 mach_msg�
 
 `isSettable` 只占 5%（1 155 / 23 172），按角色门控的收益可忽略，不做。
 
+## 已实施：摘要遍历提前终止
+
+`summarizedGenericText` 只有在「≤8 段文本且 ≤220 字符」时才会合并成摘要
+（`shouldMergeTextOnlySiblings`），因此遍历一旦超过上限，结果注定被丢弃。`SummaryTextCollector`
+在采集阶段就停在 9 段 / 221 字符，不再为必然失败的摘要读取整棵子树。
+
+360 极速浏览器 Pro 实测：
+
+| 指标 | 优化前 | 优化后 |
+| --- | --- | --- |
+| `tree_walk` | 10 958 ms | 7 220 ms |
+| 总耗时 | 11.91 s | 8.07 s |
+| AX 调用 | 23 172 | 21 406 |
+| 输出行数 | 4 505 | 3 889（页面内容本身有波动） |
+
+常规 app 输出等价：Chrome 背靠背完全一致；访达的 `ZIP` / `ZIP归档` 差异在**同一二进制**重复运行时
+同样出现，属于 app 自身波动。新增两个 fixture 测试锁定「≤8 段合并、>8 段不合并」。
+
+钉钉不受影响（15.43 s，仍在 15 s 预算内截断）：它的成本在扫描与 `AXValue` 单读，而不是摘要遍历。
+
 ## 已评估未采纳：扫描倍数 4× → 2×
 
 `AccessibilitySnapshot` 的 `scanLimit = max(64, min(limit, 2500) * 4)` 是 #145 为「大列表挤掉后面的
