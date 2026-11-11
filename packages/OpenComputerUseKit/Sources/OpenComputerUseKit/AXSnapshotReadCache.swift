@@ -21,6 +21,18 @@ final class AXSnapshotReadCache: NSObject {
     }
     static let key = "OpenComputerUse.AXSnapshotReadCache"
     static var current: AXSnapshotReadCache? { Thread.current.threadDictionary[key] as? AXSnapshotReadCache }
+
+    /// Per-walk AX IPC counts. Printed when `OPEN_COMPUTER_USE_DEBUG_AX_CALLS=1`;
+    /// slow providers cost real time per call, so the count is the first thing to check.
+    struct CallCounts {
+        var batch = 0
+        var single = 0
+        var actions = 0
+        var settable = 0
+        var singleNames: [String: Int] = [:]
+        var total: Int { batch + single + actions + settable }
+    }
+    private(set) var callCounts = CallCounts()
     private var attributes: [ElementKey: [String: Attribute]] = [:]
     private var prefetched: Set<ElementKey> = []
     private var actions: [ElementKey: [String]] = [:]
@@ -41,7 +53,14 @@ final class AXSnapshotReadCache: NSObject {
     static func withSnapshot<T>(_ body: () throws -> T) rethrows -> T {
         let cache = ProcessInfo.processInfo.environment["OPEN_COMPUTER_USE_DISABLE_AX_READ_CACHE"] == "1"
             ? nil : AXSnapshotReadCache()
-        return try withCache(cache, body)
+        let result = try withCache(cache, body)
+        if let cache, ProcessInfo.processInfo.environment["OPEN_COMPUTER_USE_DEBUG_AX_CALLS"] == "1" {
+            let counts = cache.callCounts
+            let topSingles = counts.singleNames.sorted { $0.value > $1.value }.prefix(5)
+                .map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+            fputs("[open-computer-use] ax-calls batch=\(counts.batch) single=\(counts.single) actions=\(counts.actions) settable=\(counts.settable) total=\(counts.total) topSingles=\(topSingles)\n", stderr)
+        }
+        return result
     }
 
     static func withCache<T>(_ cache: AXSnapshotReadCache?, _ body: () throws -> T) rethrows -> T {
@@ -54,10 +73,15 @@ final class AXSnapshotReadCache: NSObject {
 
     func value(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         let key = ElementKey(element: element)
-        if prefetched.insert(key).inserted { attributes[key] = batch(element) }
+        if prefetched.insert(key).inserted {
+            callCounts.batch += 1
+            attributes[key] = batch(element)
+        }
         if (name == "AXValue" || name == "AXSelectedText"),
            isSecureTextField(subrole: value(element, "AXSubrole") as? String) { return nil }
         if let cached = attributes[key]?[name] { return cached.value }
+        callCounts.single += 1
+        callCounts.singleNames[name, default: 0] += 1
         let (error, value) = single(element, name)
         if error == .success, let value { attributes[key, default: [:]][name] = .value(value); return value }
         if error == .attributeUnsupported || error == .noValue { attributes[key, default: [:]][name] = .absent }
@@ -67,6 +91,7 @@ final class AXSnapshotReadCache: NSObject {
     func actionNames(_ element: AXUIElement) -> [String]? {
         let key = ElementKey(element: element)
         if let cached = actions[key] { return cached }
+        callCounts.actions += 1
         let (error, raw) = readActions(element)
         if error == .success { let names = raw ?? []; actions[key] = names; return names }
         return nil
@@ -75,6 +100,7 @@ final class AXSnapshotReadCache: NSObject {
     func isSettable(_ element: AXUIElement, _ name: String) -> Bool {
         let key = ElementKey(element: element)
         if let cached = settable[key]?[name] { return cached }
+        callCounts.settable += 1
         let (error, flag) = readSettable(element, name)
         let result = error == .success && flag
         if error == .success || error == .attributeUnsupported { settable[key, default: [:]][name] = result }

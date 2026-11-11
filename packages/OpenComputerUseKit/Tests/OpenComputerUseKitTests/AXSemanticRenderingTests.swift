@@ -255,4 +255,24 @@ final class AXSemanticRenderingTests: XCTestCase {
         XCTAssertTrue(output.lines.contains { $0.contains("tree truncated") })
     }
 
+    func testWalkBudgetLimitsAreCarriedThroughReplacing() {
+        let limits = AccessibilityTreeLimits(maxNodeCount: 10, maxDepth: 5, maxWalkMilliseconds: 250)
+        XCTAssertEqual(limits.replacing(maxNodeCount: 20).maxWalkMilliseconds, 250)
+        XCTAssertEqual(limits.replacing(maxWalkMilliseconds: 500).maxWalkMilliseconds, 500)
+        XCTAssertGreaterThan(AccessibilityTreeLimits.defaults.maxWalkMilliseconds, 0)
+    }
+
+    func testZeroWalkBudgetDisablesTheTimeLimit() {
+        let fixture = Fixture()
+        var children: [Int] = []
+        for id in 10..<60 {
+            fixture.add(id, role: "AXStaticText", title: "Row \(id)")
+            children.append(id)
+        }
+        fixture.nodes[0]!.children = children
+        let output = fixture.render(limits: .init(maxNodeCount: 100, maxDepth: 64, maxWalkMilliseconds: 0))
+        XCTAssertGreaterThanOrEqual(output.records.count, 40)
+        XCTAssertFalse(output.lines.contains { $0.contains("tree walk budget") })
+    }
+
 }

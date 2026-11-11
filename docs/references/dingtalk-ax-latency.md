@@ -93,3 +93,39 @@ OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY=1 OPEN_COMPUTER_USE_DEBUG_TIMING=1 \
 # 采样（另开一个 shell，等 snapshot 起来后执行）
 sample $(pgrep -f "OpenComputerUse snapshot 钉钉" | head -1) 18 -file /tmp/dingtalk-sample.txt
 ```
+
+## 调用计数（第二轮）
+
+给 `AXSnapshotReadCache` 加了 `OPEN_COMPUTER_USE_DEBUG_AX_CALLS=1` 的计数输出后，一次 19.97 s 的
+主树遍历是：
+
+| 调用类型 | 次数 |
+| --- | --- |
+| 批量（19 属性） | 5 112 |
+| 单属性 | 2 903（其中 `AXValue` = 2 901） |
+| `AXActionNames` | 860 |
+| `AXUIElementIsAttributeSettable` | 856 |
+| 合计 | 9 731 |
+
+约 2.0 ms/次。`AXValue` 不能并入批量列表：密码字段明确禁止读取其值，批量读取会绕过
+`isSecureTextField` 的保护。
+
+全树 1 500 个节点的批量耗时分布：p50 = 0.18 ms、p90 = 4.50 ms、p99 = 8.02 ms、max = 23.19 ms。
+慢的是长尾（`AXTable` 23 ms、`AXCell`/`AXStaticText` 8–10 ms），不是平均成本。
+
+轻量批量实验（扫描只需要 8 个属性）：浅层元素 0.17 ms vs 0.22 ms（省 21%），大表行 0.08 ms vs
+0.13 ms（省 35%）。省下的绝对值太小，不值得引入两级批量缓存。
+
+## 已实施：树遍历墙钟预算
+
+结论是这类 provider 只能靠限时兜底，不能靠微优化：
+
+- `AccessibilityTreeLimits.maxWalkMilliseconds` 默认 15 000 ms，`OPEN_COMPUTER_USE_TREE_WALK_BUDGET_MS`
+  可覆盖；`0` 表示关闭预算。
+- 扫描最多用 60% 预算，剩下留给渲染；`webAreaRewalkAttempts` 的重走循环共享同一个截止时间，
+  预算耗尽后不再重走。
+- 超出预算时返回已收集的节点，并在树末尾追加
+  `[Accessibility tree truncated: tree walk budget 15000 ms reached; some nodes were omitted.]`。
+
+实测钉钉：19.99 s / 1 724 行 → **15.37 s / 958 行 + 截断说明**。常规 app 不受影响（496 个单元
+测试全部通过）。如果调用方需要完整树，可以显式调高该预算。

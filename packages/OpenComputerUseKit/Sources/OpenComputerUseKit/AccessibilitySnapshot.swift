@@ -63,23 +63,39 @@ enum SnapshotRecoveryPolicy: Equatable {
 public struct AccessibilityTreeLimits: Equatable, Sendable {
     public static let defaultMaxNodeCount = 1200
     public static let defaultMaxDepth = 64
-    public static let defaults = AccessibilityTreeLimits(
-        maxNodeCount: defaultMaxNodeCount,
-        maxDepth: defaultMaxDepth
-    )
+    /// Upper bound for one full tree walk (scan + render). A slow accessibility
+    /// provider (measured: DingTalk answers some calls in 5-20 ms) can otherwise
+    /// turn a bounded node count into an unbounded wall-clock wait.
+    public static let defaultMaxWalkMilliseconds = 15000
+    public static let defaults: AccessibilityTreeLimits = {
+        let budget = ProcessInfo.processInfo.environment["OPEN_COMPUTER_USE_TREE_WALK_BUDGET_MS"]
+            .flatMap(Int.init) ?? defaultMaxWalkMilliseconds
+        return AccessibilityTreeLimits(
+            maxNodeCount: defaultMaxNodeCount,
+            maxDepth: defaultMaxDepth,
+            maxWalkMilliseconds: budget
+        )
+    }()
 
     public let maxNodeCount: Int
     public let maxDepth: Int
+    public let maxWalkMilliseconds: Int
 
-    public init(maxNodeCount: Int = defaultMaxNodeCount, maxDepth: Int = defaultMaxDepth) {
+    public init(
+        maxNodeCount: Int = defaultMaxNodeCount,
+        maxDepth: Int = defaultMaxDepth,
+        maxWalkMilliseconds: Int = defaultMaxWalkMilliseconds
+    ) {
         self.maxNodeCount = maxNodeCount
         self.maxDepth = maxDepth
+        self.maxWalkMilliseconds = maxWalkMilliseconds
     }
 
-    public func replacing(maxNodeCount: Int? = nil, maxDepth: Int? = nil) -> AccessibilityTreeLimits {
+    public func replacing(maxNodeCount: Int? = nil, maxDepth: Int? = nil, maxWalkMilliseconds: Int? = nil) -> AccessibilityTreeLimits {
         AccessibilityTreeLimits(
             maxNodeCount: maxNodeCount ?? self.maxNodeCount,
-            maxDepth: maxDepth ?? self.maxDepth
+            maxDepth: maxDepth ?? self.maxDepth,
+            maxWalkMilliseconds: maxWalkMilliseconds ?? self.maxWalkMilliseconds
         )
     }
 }
@@ -304,8 +320,10 @@ enum SnapshotBuilder {
             treeLimits: treeLimits
         )
 
+        let walkBudget = treeLimits.maxWalkMilliseconds
+        let mainDeadline: TimeInterval? = walkBudget > 0 ? TimingLog.now() + Double(walkBudget) / 1000 : nil
         var renderer = TreeRenderer(context: context)
-        TimingLog.measure("snapshot.tree_walk") { AXSnapshotReadCache.withSnapshot { renderer.render(rootElement) } }
+        TimingLog.measure("snapshot.tree_walk") { AXSnapshotReadCache.withSnapshot { renderer.render(rootElement, deadline: mainDeadline) } }
 
         // Pin the window's visible state (WindowServer occlusion notifications
         // off) so covering it or moving it to another Space later does not hide
@@ -319,9 +337,10 @@ enum SnapshotBuilder {
         if lazyWebAccessibility, !renderer.hasWebArea {
             if pinned {
                 for _ in 0..<webAreaRewalkAttempts {
+                    if let mainDeadline, TimingLog.now() > mainDeadline { break }
                     Thread.sleep(forTimeInterval: webAreaRewalkInterval)
                     renderer = TreeRenderer(context: context)
-                    AXSnapshotReadCache.withSnapshot { renderer.render(rootElement) }
+                    AXSnapshotReadCache.withSnapshot { renderer.render(rootElement, deadline: mainDeadline) }
                     if renderer.hasWebArea {
                         break
                     }
@@ -889,15 +908,29 @@ private struct TreeRenderer {
     private var selected: Set<TraversalElementKey> = []
     private var rendered: Set<TraversalElementKey> = []
     private var plannedChildren: [TraversalElementKey: [AXUIElement]] = [:]
+    private var scanDeadline: TimeInterval?
+    private var walkDeadline: TimeInterval?
+    private var walkTimeTruncated = false
 
     init(context: RenderContext) {
         self.context = context
     }
 
-    mutating func render(_ root: AXUIElement) {
+    mutating func render(_ root: AXUIElement, deadline sharedDeadline: TimeInterval? = nil) {
+        let budget = context.treeLimits.maxWalkMilliseconds
+        let effectiveDeadline = sharedDeadline ?? (budget > 0 ? TimingLog.now() + Double(budget) / 1000 : nil)
+        walkTimeTruncated = false
+        walkDeadline = effectiveDeadline
+        // Leave the tail of the budget for rendering: scanning discovers the
+        // prioritized controls, rendering turns them into output.
+        scanDeadline = effectiveDeadline.map { min($0, TimingLog.now() + Double(budget) / 1000 * 0.6) }
         let truncated = plan(root)
         renderSelected(root)
-        if truncated { lines.append("[Accessibility tree truncated: prioritized visible controls; some nodes were omitted.]") }
+        if walkTimeTruncated {
+            lines.append("[Accessibility tree truncated: tree walk budget \(budget) ms reached; some nodes were omitted.]")
+        } else if truncated {
+            lines.append("[Accessibility tree truncated: prioritized visible controls; some nodes were omitted.]")
+        }
     }
 
     // Discover before rendering: a large early list cannot consume the output budget
@@ -913,10 +946,13 @@ private struct TreeRenderer {
         let limit = max(0, context.treeLimits.maxNodeCount - nextIndex)
         let scanLimit = max(64, min(limit, 2500) * 4)
         var scanned = 0, truncated = false
+        var timeTruncated = false
+        let deadline = scanDeadline
         var queues = Array(repeating: [Work](), count: 5)
         var offsets = Array(repeating: 0, count: 5)
         var discovered: Set<TraversalElementKey> = []
         func enqueue(_ work: Work) {
+            if let deadline, TimingLog.now() > deadline { timeTruncated = true; truncated = true; return }
             guard work.depth < context.treeLimits.maxDepth, scanned < scanLimit else { truncated = true; return }
             scanned += 1
             guard discovered.insert(.init(element: work.node)).inserted else { return }
@@ -934,6 +970,7 @@ private struct TreeRenderer {
         let rootFrame = resolveLocalFrame(of: root, windowBounds: nil)
         enqueue(.init(node: root, depth: 0, inCollection: false, viewport: rootFrame))
         while selected.count < limit, let rank = queues.indices.first(where: { offsets[$0] < queues[$0].count }) {
+            if let deadline, TimingLog.now() > deadline { timeTruncated = true; truncated = true; break }
             let work = queues[rank][offsets[rank]]; offsets[rank] += 1
             let key = TraversalElementKey(element: work.node)
             selected.insert(key)
@@ -950,10 +987,12 @@ private struct TreeRenderer {
             plannedChildren[key] = raw.children
             for child in raw.children { enqueue(.init(node: child, depth: work.depth + 1, inCollection: collection, viewport: viewport)) }
         }
+        if timeTruncated { walkTimeTruncated = true }
         return truncated || queues.indices.contains { offsets[$0] < queues[$0].count }
     }
 
     private mutating func renderSelected(_ root: AXUIElement, depth: Int = 0, ancestors: [AXUIElement] = []) {
+        if let walkDeadline, TimingLog.now() > walkDeadline { walkTimeTruncated = true; return }
         guard selected.contains(.init(element: root)), rendered.insert(.init(element: root)).inserted else { return }
         guard shouldContinueRendering(nextIndex: nextIndex, depth: depth, limits: context.treeLimits) else {
             return
