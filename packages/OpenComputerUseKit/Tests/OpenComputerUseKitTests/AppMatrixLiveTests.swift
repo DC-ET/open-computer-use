@@ -6,12 +6,13 @@ import XCTest
 @testable import OpenComputerUseKit
 
 /// Opt-in survey across whatever GUI apps are running: snapshot each app
-/// without activating it, then, when it exposes an EMPTY text or search field,
-/// sky_click that field, sky_key a marker into it, verify the marker via a
+/// without activating it, then, when it exposes an EMPTY, ENABLED text or search
+/// field, sky_click that field, sky_key a marker into it, verify the marker via a
 /// fresh snapshot, and delete exactly the marker again. Prints one row per app
-/// and never asserts per app; the only assertion is that the frontmost app is
-/// unchanged at the end. Set OPEN_COMPUTER_USE_APP_MATRIX_SKIP to a comma list
-/// of app names to exclude. With OPEN_COMPUTER_USE_APP_MATRIX_PARK=1 each
+/// and never asserts per app; the assertion is that the frontmost app is
+/// unchanged at the end, plus a pointer check when the machine is unattended
+/// (`OPEN_COMPUTER_USE_APP_MATRIX_ASSUME_IDLE=1`). Set OPEN_COMPUTER_USE_APP_MATRIX_SKIP
+/// to a comma list of app names to exclude. With OPEN_COMPUTER_USE_APP_MATRIX_PARK=1 each
 /// non-fullscreen window is additionally parked on the agent display, surveyed
 /// and driven there, then restored to its original position.
 @MainActor
@@ -32,6 +33,7 @@ final class AppMatrixLiveTests: XCTestCase {
             let candidates = snapshot.elements.values.filter { record in
                 guard let role = record.role, let element = record.element else { return false }
                 guard role == kAXTextFieldRole as String || role == "AXSearchField" || role == kAXTextAreaRole as String || role == kAXComboBoxRole as String else { return false }
+                guard isEnabled(element) else { return false }
                 var value: CFTypeRef?
                 AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
                 guard ((value as? String) ?? "").isEmpty, let frame = record.localFrame, frame.width >= 40, frame.height >= 12 else { return false }
@@ -124,6 +126,7 @@ final class AppMatrixLiveTests: XCTestCase {
             let candidates = snapshot.elements.values.filter { record in
                 guard let role = record.role, let element = record.element else { return false }
                 guard role == kAXTextFieldRole as String || role == "AXSearchField" || role == kAXTextAreaRole as String || role == kAXComboBoxRole as String else { return false }
+                guard isEnabled(element) else { return false }
                 var value: CFTypeRef?
                 AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
                 let text = (value as? String) ?? ""
@@ -165,10 +168,15 @@ final class AppMatrixLiveTests: XCTestCase {
         rows.forEach { print($0) }
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, frontBefore?.processIdentifier, "the survey must not change the frontmost app")
         // Creating and destroying the agent display can shift the pointer by sub-point
-        // amounts through display scaling, so assert no real movement.
+        // amounts through display scaling, and a user at the keyboard moves it for real;
+        // only assert no movement when the caller confirms the machine is unattended.
         let mouseAfter = NSEvent.mouseLocation
-        XCTAssertEqual(mouseAfter.x, mouseBefore.x, accuracy: 1, "the survey must not move the pointer")
-        XCTAssertEqual(mouseAfter.y, mouseBefore.y, accuracy: 1, "the survey must not move the pointer")
+        let drift = hypot(mouseAfter.x - mouseBefore.x, mouseAfter.y - mouseBefore.y)
+        if ProcessInfo.processInfo.environment["OPEN_COMPUTER_USE_APP_MATRIX_ASSUME_IDLE"] == "1" {
+            XCTAssertLessThanOrEqual(drift, 1, "the survey must not move the pointer")
+        } else if drift > 1 {
+            print("MATRIX note: pointer moved \(Int(drift))pt during the survey; set OPEN_COMPUTER_USE_APP_MATRIX_ASSUME_IDLE=1 to assert it")
+        }
         AgentDisplay.shared.restoreAll()
         WindowOcclusionKeepAlive.shared.releaseAll()
     }
@@ -185,6 +193,14 @@ final class AppMatrixLiveTests: XCTestCase {
                 && (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true
         }
     }
+
+    /// Disabled fields reject input; picking one turned app behaviour into a false failure.
+    private func isEnabled(_ element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &value)
+        return (value as? Bool) ?? true
+    }
+
     private func short(_ error: Error) -> String { String(((error as? ComputerUseError)?.errorDescription ?? "\(error)").prefix(90)) }
     private func appLooksWebKit(_ app: NSRunningApplication) -> Bool {
         (app.bundleIdentifier ?? "").lowercased().contains("safari")
