@@ -39,3 +39,5 @@
   - 被遮挡 / 其他 Space 窗口的 AX tree 与截图为什么会丢、WindowServer occlusion 通知 keep-alive、Chromium 懒加载 AX tree、已验证与未解决的边界。
 - `macos-skylight-background-keyboard.md`
   - `key_method=sky_key` 的实机研究记录：为什么后台 Chromium 收得到按键却不输入文字、yabai key-window record、菜单快捷键走 AX、跨 Space 验证，以及哪些方案被实测否定。
+- `baseline-2026-11-11.md`
+  - 本机全量回归基线：swift / node / go / python / smoke / stress / 实机门控 / benchmark / app matrix 的通过项、基线数字、失败项分诊与下一步建议。

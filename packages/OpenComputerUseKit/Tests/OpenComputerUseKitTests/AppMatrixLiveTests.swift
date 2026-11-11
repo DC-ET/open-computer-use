@@ -68,6 +68,10 @@ final class AppMatrixLiveTests: XCTestCase {
         for app in apps {
             let name = app.localizedName ?? "pid \(app.processIdentifier)"
             let engine = appHasLazyWebAccessibility(bundleURL: app.bundleURL) ? "chromium" : (appLooksWebKit(app) ? "webkit" : "native")
+            guard hasOnScreenWindow(pid: app.processIdentifier) else {
+                rows.append(row(name, engine, "no on-screen window; skipped"))
+                continue
+            }
             let descriptor = RunningAppDescriptor(name: name, bundleIdentifier: app.bundleIdentifier, pid: app.processIdentifier, runningApplication: app)
             let t0 = TimingLog.now()
             let snapshot: AppSnapshot
@@ -160,12 +164,27 @@ final class AppMatrixLiveTests: XCTestCase {
         print("MATRIX frontmost=\(frontBefore?.localizedName ?? "?") apps=\(apps.count) park=\(park)")
         rows.forEach { print($0) }
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, frontBefore?.processIdentifier, "the survey must not change the frontmost app")
-        XCTAssertEqual(NSEvent.mouseLocation, mouseBefore, "the survey must not move the pointer")
+        // Creating and destroying the agent display can shift the pointer by sub-point
+        // amounts through display scaling, so assert no real movement.
+        let mouseAfter = NSEvent.mouseLocation
+        XCTAssertEqual(mouseAfter.x, mouseBefore.x, accuracy: 1, "the survey must not move the pointer")
+        XCTAssertEqual(mouseAfter.y, mouseBefore.y, accuracy: 1, "the survey must not move the pointer")
         AgentDisplay.shared.restoreAll()
         WindowOcclusionKeepAlive.shared.releaseAll()
     }
 
     private func row(_ name: String, _ engine: String, _ detail: String) -> String { "MATRIX \(name) [\(engine)] \(detail)" }
+
+    /// Apps without any on-screen window cannot be surveyed; `SnapshotBuilder` would
+    /// otherwise fail with `cgWindowNotFound` and read as a product failure.
+    private func hasOnScreenWindow(pid: pid_t) -> Bool {
+        let raw = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+        return raw.contains { info in
+            guard let owner = info[kCGWindowOwnerPID as String] as? NSNumber else { return false }
+            return owner.int32Value == pid
+                && (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true
+        }
+    }
     private func short(_ error: Error) -> String { String(((error as? ComputerUseError)?.errorDescription ?? "\(error)").prefix(90)) }
     private func appLooksWebKit(_ app: NSRunningApplication) -> Bool {
         (app.bundleIdentifier ?? "").lowercased().contains("safari")

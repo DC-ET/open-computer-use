@@ -29,7 +29,8 @@ fi
 
 cd "${repo_root}"
 
-swift build "${build_args[@]}"
+# bash 3.2 (macOS) treats an empty "${build_args[@]}" as unset under `set -u`.
+swift build ${build_args[@]+"${build_args[@]}"}
 
 started_at="$(date +%s)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/open-computer-use-stress.XXXXXX")"

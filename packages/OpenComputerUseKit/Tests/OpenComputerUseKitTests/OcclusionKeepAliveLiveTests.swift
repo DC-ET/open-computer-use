@@ -55,9 +55,8 @@ final class OcclusionKeepAliveLiveTests: XCTestCase {
             stop(chrome)
         }
         let window = try waitForWindow(pid: chrome.processIdentifier, nameContaining: "ocu-occlusion-", onScreenOnly: true)
-        guard let runningChrome = NSRunningApplication(processIdentifier: window.pid) else {
-            return XCTFail("Chrome is not a running application")
-        }
+        // LaunchServices can lag behind the first window by a few tens of milliseconds.
+        let runningChrome = try waitForRunningApplication(pid: window.pid)
         let descriptor = RunningAppDescriptor(
             name: runningChrome.localizedName ?? "Google Chrome",
             bundleIdentifier: runningChrome.bundleIdentifier,
@@ -125,6 +124,19 @@ final class OcclusionKeepAliveLiveTests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
         throw ComputerUseError.message("Timed out waiting for window title containing \(marker)")
+    }
+
+    private func waitForRunningApplication(pid: pid_t, timeout: TimeInterval = 3) throws -> NSRunningApplication {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let app = NSRunningApplication(processIdentifier: pid) {
+                return app
+            }
+            if Date() >= deadline {
+                throw ComputerUseError.message("pid \(pid) never showed up as a running application")
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
     }
 
     private func launch(executable: URL) throws -> Process {
