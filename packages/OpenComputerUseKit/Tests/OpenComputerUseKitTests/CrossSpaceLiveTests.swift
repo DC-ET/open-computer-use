@@ -68,14 +68,16 @@ final class CrossSpaceLiveTests: XCTestCase {
         guard let otherSpace = userSpaces().first(where: { $0 != homeSpace }) else {
             throw XCTSkip("Create a second Desktop in Mission Control to run the cross-Space live test")
         }
-        let windowsBeforeSwitch = onScreenWindowIDs()
+        // Track one concrete window on the current Desktop: unrelated window churn
+        // (notifications, panels) must not be mistaken for a real Space switch.
+        let probeWindowID = largestOnScreenWindowID()
         setCurrentSpace(cid, displayIdentifier as CFString, otherSpace)
         RunLoop.current.run(until: Date().addingTimeInterval(1.5))
         // macOS 26.6.2 can accept the call and update SLSGetActiveSpace while the
         // WindowServer never switches the visible desktop; without a real switch the
         // target would launch on the user's Desktop and the assertions below would
         // read as product failures. Skipping is the honest outcome there.
-        guard onScreenWindowIDs() != windowsBeforeSwitch else {
+        guard let probeWindowID, !windowIsOnScreen(probeWindowID) else {
             throw XCTSkip("SLSManagedDisplaySetCurrentSpace reported success but the desktop did not switch; cross-Space setup is unavailable on this macOS")
         }
         XCTAssertEqual(activeSpace(cid), otherSpace, "test setup must switch to the second Desktop")
@@ -159,13 +161,28 @@ final class CrossSpaceLiveTests: XCTestCase {
 
     private struct WindowRecord { let id: CGWindowID; let pid: pid_t; let bounds: CGRect; let name: String; let onScreen: Bool }
 
-    private func onScreenWindowIDs() -> Set<UInt32> {
+    private func largestOnScreenWindowID() -> UInt32? {
         let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        var ids = Set<UInt32>()
+        var best: (id: UInt32, area: CGFloat)?
         for info in raw {
-            if let number = info[kCGWindowNumber as String] as? NSNumber { ids.insert(number.uint32Value) }
+            guard let number = info[kCGWindowNumber as String] as? NSNumber,
+                  let bounds = CGRect(dictionaryRepresentation: (info[kCGWindowBounds as String] as? NSDictionary) ?? [:]) else {
+                continue
+            }
+            let area = bounds.width * bounds.height
+            if area > (best?.area ?? 0) {
+                best = (number.uint32Value, area)
+            }
         }
-        return ids
+        return best?.id
+    }
+
+    private func windowIsOnScreen(_ id: UInt32) -> Bool {
+        let raw = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+        return raw.contains { info in
+            (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id
+                && (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true
+        }
     }
 
     private func waitForWindow(pid: pid_t, nameContaining marker: String, onScreenOnly: Bool) throws -> WindowRecord {
