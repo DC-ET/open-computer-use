@@ -68,8 +68,16 @@ final class CrossSpaceLiveTests: XCTestCase {
         guard let otherSpace = userSpaces().first(where: { $0 != homeSpace }) else {
             throw XCTSkip("Create a second Desktop in Mission Control to run the cross-Space live test")
         }
+        let windowsBeforeSwitch = onScreenWindowIDs()
         setCurrentSpace(cid, displayIdentifier as CFString, otherSpace)
         RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        // macOS 26.6.2 can accept the call and update SLSGetActiveSpace while the
+        // WindowServer never switches the visible desktop; without a real switch the
+        // target would launch on the user's Desktop and the assertions below would
+        // read as product failures. Skipping is the honest outcome there.
+        guard onScreenWindowIDs() != windowsBeforeSwitch else {
+            throw XCTSkip("SLSManagedDisplaySetCurrentSpace reported success but the desktop did not switch; cross-Space setup is unavailable on this macOS")
+        }
         XCTAssertEqual(activeSpace(cid), otherSpace, "test setup must switch to the second Desktop")
         let originalFrontApp = NSWorkspace.shared.frontmostApplication
         defer {
@@ -150,6 +158,15 @@ final class CrossSpaceLiveTests: XCTestCase {
     }
 
     private struct WindowRecord { let id: CGWindowID; let pid: pid_t; let bounds: CGRect; let name: String; let onScreen: Bool }
+
+    private func onScreenWindowIDs() -> Set<UInt32> {
+        let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var ids = Set<UInt32>()
+        for info in raw {
+            if let number = info[kCGWindowNumber as String] as? NSNumber { ids.insert(number.uint32Value) }
+        }
+        return ids
+    }
 
     private func waitForWindow(pid: pid_t, nameContaining marker: String, onScreenOnly: Bool) throws -> WindowRecord {
         let deadline = Date().addingTimeInterval(10)

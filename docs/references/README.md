@@ -41,3 +41,5 @@
   - `key_method=sky_key` 的实机研究记录：为什么后台 Chromium 收得到按键却不输入文字、yabai key-window record、菜单快捷键走 AX、跨 Space 验证，以及哪些方案被实测否定。
 - `baseline-2026-11-11.md`
   - 本机全量回归基线：swift / node / go / python / smoke / stress / 实机门控 / benchmark / app matrix 的通过项、基线数字、失败项分诊与下一步建议。
+- `dingtalk-ax-latency.md`
+  - 钉钉 snapshot 20 s 的定位过程：tree_walk 占 19.6 s、采样全部阻塞在 AX provider、逐元素调用统计与可选优化方向。
