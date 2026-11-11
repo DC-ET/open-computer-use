@@ -15,6 +15,11 @@ import XCTest
 /// to a comma list of app names to exclude. With OPEN_COMPUTER_USE_APP_MATRIX_PARK=1 each
 /// non-fullscreen window is additionally parked on the agent display, surveyed
 /// and driven there, then restored to its original position.
+///
+/// Verification only observes the clicked field and the tree. An app that routes
+/// background input to its own focused element (DingTalk keeps the message
+/// composer focused even after a click on the search box) reports `typed=false`
+/// although the text did land, so read those rows together with the app.
 @MainActor
 final class AppMatrixLiveTests: XCTestCase {
     func testSurveyRunningApps() throws {

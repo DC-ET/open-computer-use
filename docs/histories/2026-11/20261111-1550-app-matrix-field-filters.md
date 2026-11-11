@@ -36,7 +36,9 @@
 
 ## 关联发现
 
-钉钉的 `typed=false` 与语雀不同源：它的搜索框是 enabled + settable，手动复现
-`click(element_index: 11)` → `type_text("zq7x")`（默认与显式 `sky_key` 两条路径）都返回
-`isError=false`，但两次快照都找不到标记、字段值也未变化——属于产品级问题：点击后焦点未
-真正落入 Web 输入框，且 `type_text` 缺少回读校验。已记入基线报告的待修项。
+钉钉的 `typed=false` 与语雀不同源，也不是产品缺陷：点击搜索框（`element_index: 11`）前后读取
+`AXFocusedUIElement`，焦点始终停在消息输入框（`AXTextArea`）；随后 `type_text` 把标记写进了
+消息输入框（实测读到 `zq7xzq7x`，已用退格清理）。矩阵只回读被点击字段，所以报 `typed=false`。
+
+仍待确认的产品问题：后台点击搜索框是否应当转移 AX 焦点（`click` 报成功但不改变焦点）；
+以及 `type_text` 的 `sky_key` 路径没有回读校验，失败时无法从返回值察觉。已记入基线报告待修项。
