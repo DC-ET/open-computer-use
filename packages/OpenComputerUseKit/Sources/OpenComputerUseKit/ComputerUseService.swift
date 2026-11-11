@@ -921,6 +921,7 @@ public final class ComputerUseService {
             }
 
             pulseVisualCursor(at: cursorTarget, clickCount: clickCount, mouseButton: button)
+            focusTextEntryIfPossible(record)
         } else if let x, let y {
             let screenshotPoint = CGPoint(x: x, y: y)
             let point = try screenshotPixelToWindowPointInSnapshot(snapshot: snapshot, point: screenshotPoint)
@@ -950,6 +951,7 @@ public final class ComputerUseService {
                             clickPoint: point
                         ) {
                             handled = true
+                            focusTextEntryIfPossible(record)
                             break
                         }
                     }
@@ -1103,7 +1105,27 @@ public final class ComputerUseService {
 
         if keyMethod == .skyKey {
             let target = try skyKeyTarget(for: snapshot)
+            // sky_key posts key events without touching AX, so a silent miss used to look
+            // like success. Verify only the same empty web text controls the keyboard
+            // fallback already verifies, and never read a secure field.
+            let focused = Self.focusedElement(pid: snapshot.app.pid)
+            let beforeValue: String? = {
+                guard let focused,
+                      !isSecureTextField(subrole: stringValue(of: focused, attribute: kAXSubroleAttribute)),
+                      keyboardTextWriteNeedsVerification(on: focused) else { return nil }
+                return stringValue(of: focused, attribute: kAXValueAttribute)
+            }()
             try InputSimulation.typeTextWithSkyLight(text, windowID: target.windowID, pid: target.pid)
+            if let focused, let beforeValue,
+               let afterValue = waitForStringAttribute(
+                   kAXValueAttribute as String,
+                   of: focused,
+                   toChangeFrom: beforeValue,
+                   timeout: 0.5
+               ),
+               afterValue == beforeValue {
+                throw ComputerUseError.stateUnavailable("type_text delivered sky_key input but the focused text element did not change. The app may not accept background keyboard input; click the text entry area and try again, or use set_value on a settable text element.")
+            }
             return snapshotResult(
                 for: try refreshSnapshot(for: query, recoveryPolicy: keyActionSnapshotRecoveryPolicy(for: keyMethod)),
                 style: .actionResult
@@ -1765,6 +1787,24 @@ public final class ComputerUseService {
     private func setBoolAttribute(named attribute: String, on element: AXUIElement) throws -> Bool {
         try requireUsableComputerUseSession()
         return try clickAttributeWasSet(AXUIElementSetAttributeValue(element, attribute as CFString, kCFBooleanTrue), attribute: attribute)
+    }
+
+    /// A background click delivers a mouse event, but many apps keep their previous
+    /// AX focus, so the natural `click` → `type_text` flow types into the control
+    /// that was focused before. Text entries accept an explicit AXFocused write;
+    /// this is best effort and only touches text-entry roles.
+    private func focusTextEntryIfPossible(_ record: ElementRecord) {
+        guard let element = record.element else { return }
+        let role = stringValue(of: element, attribute: kAXRoleAttribute) ?? ""
+        let textEntryRoles = [
+            kAXTextFieldRole as String,
+            kAXTextAreaRole as String,
+            kAXComboBoxRole as String,
+            "AXSearchField",
+        ]
+        guard textEntryRoles.contains(role),
+              isSettable(element: element, attribute: kAXFocusedAttribute) else { return }
+        _ = try? setBoolAttribute(named: kAXFocusedAttribute, on: element)
     }
 
     private func isSettable(element: AXUIElement, attribute: String) -> Bool {
