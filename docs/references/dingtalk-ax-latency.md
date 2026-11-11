@@ -83,6 +83,26 @@ AXUIElementCopyMultipleAttributeValues  2789 samples（同样阻塞在 mach_msg�
 
 方向 1 和 2 收益/风险比最好；方向 3 需要真实大列表回归；方向 4 需要先解决失效语义。
 
+## 同一族的第二个样本：360 极速浏览器 Pro
+
+| 指标 | 数值 |
+| --- | --- |
+| `snapshot.window_capture` | 78.1 ms |
+| `snapshot.tree_walk` | 10 958.2 ms |
+| 总耗时 | 11.91 s |
+| 批量（19 属性） | 14 642 |
+| 单属性 | 6 205（全部 `AXValue`） |
+| `AXActionNames` / `isSettable` | 1 170 / 1 155 |
+| 合计 | 23 172 次 |
+| 输出 | 4 505 行（未触发 15 s 预算） |
+
+平均约 0.47 ms/次（比钉钉快），但调用量是钉钉的 2.4 倍。批量数（14 642）远超扫描上限
+（`scanLimit` = 4 800），说明大头来自**渲染阶段对子孙元素的摘要遍历**
+（`summarizedGenericText` / `flattenedRowTexts` / `containsActionableLinkDescendant` 等），
+而不只是扫描。
+
+`isSettable` 只占 5%（1 155 / 23 172），按角色门控的收益可忽略，不做。
+
 ## 已评估未采纳：扫描倍数 4× → 2×
 
 `AccessibilitySnapshot` 的 `scanLimit = max(64, min(limit, 2500) * 4)` 是 #145 为「大列表挤掉后面的

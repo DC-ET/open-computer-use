@@ -2,6 +2,7 @@
 
 ## 当前最低验证线
 
+- 全量本地回归：`./scripts/run-full-regression.sh`（`--skip-gui` 只跑构建/单元测试/静态检查；`--include-app-matrix` 额外跑真实 app 矩阵，其余 GUI 步骤默认执行）。
 - 构建：`swift build`
 - 单元测试：`swift test`
 - JS REPL 与 CLI：`node --test scripts/node-repl/*.test.mjs`
